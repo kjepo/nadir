@@ -407,37 +407,50 @@ $(function () {
              edge: textColorFor(lb.color) === '#ffffff' ? '#ffffff' : '#1a1a1a' };
   }
 
+  // Body and pointer are drawn as one outlined shape: first both outlines (at double
+  // width, since the fill then covers the inner half), then both fills on top, so no
+  // outline shows where the pointer meets the body.
   function drawLabelSvg(parent, lb, g, id) {
     const grp = svg('g', id != null ? { 'data-drag': 'label', 'data-id': id } : {}, parent);
-    const common = { fill: g.fill, stroke: g.edge, 'stroke-width': g.stroke, 'stroke-linejoin': 'round' };
-    if (g.wedge) svg('polygon', { points: g.wedge.map(p => p.join(',')).join(' '), ...common }, grp);
-    if (g.r == null) svg('ellipse', { cx: g.cx, cy: g.cy, rx: g.w / 2, ry: g.h / 2, ...common }, grp);
-    else svg('rect', { x: g.cx - g.w / 2, y: g.cy - g.h / 2, width: g.w, height: g.h, rx: g.r, ...common }, grp);
+    const outline = { fill: g.edge, stroke: g.edge, 'stroke-width': g.stroke * 2, 'stroke-linejoin': 'round' };
+    const fill = { fill: g.fill };
+    for (const style of [outline, fill]) {
+      if (g.wedge) svg('polygon', { points: g.wedge.map(p => p.join(',')).join(' '), ...style }, grp);
+      if (g.r == null) svg('ellipse', { cx: g.cx, cy: g.cy, rx: g.w / 2, ry: g.h / 2, ...style }, grp);
+      else svg('rect', { x: g.cx - g.w / 2, y: g.cy - g.h / 2, width: g.w, height: g.h, rx: g.r, ...style }, grp);
+    }
     const t = svg('text', { x: g.cx, y: g.cy, fill: g.text, 'text-anchor': 'middle', 'dominant-baseline': 'central',
                             'font-family': FONT_FAMILY, 'font-weight': 600, 'font-size': g.fs,
                             'pointer-events': 'none' }, grp);
     t.textContent = lb.name;
-    const dot = svg('circle', { cx: lb.x, cy: lb.y, r: g.dot, ...common }, grp);
+    const dot = svg('circle', { cx: lb.x, cy: lb.y, r: g.dot, fill: g.fill, stroke: g.edge, 'stroke-width': g.stroke }, grp);
     if (id != null) { dot.setAttribute('data-drag', 'anchor'); dot.setAttribute('data-id', id); }
     return grp;
   }
 
   function drawLabelCanvas(ctx, lb) {
     const g = labelGeom(lb);
-    ctx.save();
-    ctx.lineJoin = 'round'; ctx.lineWidth = g.stroke; ctx.fillStyle = g.fill; ctx.strokeStyle = g.edge;
-    const paint = () => { ctx.fill(); ctx.stroke(); };
+    const paths = [];
     if (g.wedge) {
-      ctx.beginPath(); ctx.moveTo(...g.wedge[0]); ctx.lineTo(...g.wedge[1]); ctx.lineTo(...g.wedge[2]); ctx.closePath(); paint();
+      const w = new Path2D();
+      w.moveTo(...g.wedge[0]); w.lineTo(...g.wedge[1]); w.lineTo(...g.wedge[2]); w.closePath();
+      paths.push(w);
     }
-    ctx.beginPath();
-    if (g.r == null) ctx.ellipse(g.cx, g.cy, g.w / 2, g.h / 2, 0, 0, Math.PI * 2);
-    else ctx.roundRect(g.cx - g.w / 2, g.cy - g.h / 2, g.w, g.h, g.r);
-    paint();
+    const body = new Path2D();
+    if (g.r == null) body.ellipse(g.cx, g.cy, g.w / 2, g.h / 2, 0, 0, Math.PI * 2);
+    else body.roundRect(g.cx - g.w / 2, g.cy - g.h / 2, g.w, g.h, g.r);
+    paths.push(body);
+
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.fillStyle = ctx.strokeStyle = g.edge; ctx.lineWidth = g.stroke * 2;
+    paths.forEach(p => { ctx.fill(p); ctx.stroke(p); });
+    ctx.fillStyle = g.fill;
+    paths.forEach(p => ctx.fill(p));
     ctx.fillStyle = g.text; ctx.font = g.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(lb.name, g.cx, g.cy);
-    ctx.fillStyle = g.fill;
-    ctx.beginPath(); ctx.arc(lb.x, lb.y, g.dot, 0, Math.PI * 2); paint();
+    ctx.fillStyle = g.fill; ctx.strokeStyle = g.edge; ctx.lineWidth = g.stroke;
+    ctx.beginPath(); ctx.arc(lb.x, lb.y, g.dot, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.restore();
   }
 

@@ -53,7 +53,7 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
 #sidebar .coord { font-family: var(--bs-font-monospace); font-size: .8rem; }
 #sidebar .icon-btn { border: 0; background: none; padding: 0 .25rem; color: var(--bs-secondary-color); }
 #sidebar .icon-btn:hover { color: var(--bs-body-color); }
-.swatch-dot { display: inline-block; width: .9rem; height: .9rem; border-radius: 50%; vertical-align: -2px; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+.swatch-dot { flex: none; display: inline-block; width: .9rem; height: .9rem; border-radius: 50%; vertical-align: -2px; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
 .resid-good { color: var(--bs-success); } .resid-ok { color: var(--bs-warning-text-emphasis); } .resid-bad { color: var(--bs-danger); }
 
 #swatches .sw {
