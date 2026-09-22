@@ -27,6 +27,7 @@ $(function () {
   let nextId = 1;
   let queryCounter = 0;
   let bubbleQueryId = null;
+  let bubbleAreaId = null;  // the info bubble shows either a query or an area
   let drawing = null;       // corners of the area being drawn, [[x, y], ...]
   let draftCursor = null;   // cursor position while drawing (rubber band)
   let draftGroup = null;
@@ -142,6 +143,7 @@ $(function () {
     all.forEach(o => { if (!o.id) o.id = nextId++; });
     queryCounter = state.queries.reduce((m, q) => Math.max(m, q.n || 0), 0);
     bubbleQueryId = null;
+    bubbleAreaId = null;
   }
 
   /* ---------- Image loading ---------- */
@@ -371,7 +373,7 @@ $(function () {
   function objectClicked(d) {
     if (d.type === 'cp') openCpModal(d.id);
     else if (d.type === 'query') showBubble(d.id);
-    else if (d.type === 'area' || d.type === 'arealabel') openAreaModal(d.id);
+    else if (d.type === 'area' || d.type === 'arealabel') showAreaBubble(d.id);
     else openLabelModal(d.id);
   }
 
@@ -820,7 +822,7 @@ $(function () {
       const o = dragObject({ type, id: +id });
       if (!o) return;
       if (type === 'label') centerOn((o.x + o.lx) / 2, (o.y + o.ly) / 2);
-      else if (type === 'area') centerOn(...areaAnchor(o.points));
+      else if (type === 'area') { centerOn(...areaAnchor(o.points)); showAreaBubble(o.id); }
       else centerOn(o.x, o.y);
       if (type === 'query') showBubble(o.id);
     })
@@ -846,6 +848,7 @@ $(function () {
     if (i < 0) return;
     list.splice(i, 1);
     if (type === 'query' && id === bubbleQueryId) bubbleQueryId = null;
+    if (type === 'area' && id === bubbleAreaId) bubbleAreaId = null;
     renderAll(); save();
   }
 
@@ -862,18 +865,41 @@ $(function () {
     const q = { id: nextId++, n: ++queryCounter, x, y };
     state.queries.push(q);
     bubbleQueryId = q.id;
+    bubbleAreaId = null;
     renderAll(); save();
     if (announce) positionBubble();
     return q;
   }
 
-  function showBubble(id) { bubbleQueryId = id; renderMarkers(); renderSidebar(); renderBubble(); }
+  function showBubble(id) { bubbleQueryId = id; bubbleAreaId = null; renderMarkers(); renderSidebar(); renderBubble(); }
+  function showAreaBubble(id) { bubbleAreaId = id; bubbleQueryId = null; renderMarkers(); renderSidebar(); renderBubble(); }
   function hideBubble() {
-    if (bubbleQueryId == null) return;
-    bubbleQueryId = null; renderMarkers(); renderSidebar(); renderBubble();
+    if (bubbleQueryId == null && bubbleAreaId == null) return;
+    bubbleQueryId = null; bubbleAreaId = null;
+    renderMarkers(); renderSidebar(); renderBubble();
+  }
+
+  function renderAreaBubble(a) {
+    const m = areaMetrics(a.points);
+    $('#bubble').html(`<div class="card-body p-2">
+      <div class="d-flex align-items-center mb-1 gap-2">
+        <span class="swatch-area" style="border-color:${esc(a.color)};background:${rgba(a.color, Math.max(a.opacity, 0.1))}"></span>
+        <b class="text-truncate">${esc(a.name)}</b>
+        <button type="button" class="btn-close btn-sm ms-auto" data-bubble="close"></button></div>
+      ${m ? `<div class="fs-5 fw-semibold">${Math.round(m.area).toLocaleString()} m²</div>
+             <div class="small text-secondary">${(m.area / 1e4).toFixed(m.area < 1e3 ? 3 : 2)} ha · perimeter ${fmtDist(m.perimeter)}</div>`
+          : '<div class="text-secondary small">Add 2 or more control points to measure this area.</div>'}
+      <div class="d-flex gap-1 mt-2">
+        ${m ? '<button class="btn btn-sm btn-outline-secondary py-0" data-bubble="copy-area"><i class="bi bi-clipboard"></i> Copy</button>' : ''}
+        <button class="btn btn-sm btn-outline-secondary py-0 ms-auto" data-bubble="edit-area"><i class="bi bi-pencil"></i> Edit</button>
+      </div>
+    </div>`).removeClass('d-none');
+    positionBubble();
   }
 
   function renderBubble() {
+    const a = bubbleAreaId != null && byId(state.areas, bubbleAreaId);
+    if (a) { renderAreaBubble(a); return; }
     const q = bubbleQueryId != null && byId(state.queries, bubbleQueryId);
     const $b = $('#bubble');
     if (!q) { $b.addClass('d-none'); return; }
@@ -896,15 +922,25 @@ $(function () {
   }
 
   function positionBubble() {
+    let x, y;
+    const a = bubbleAreaId != null && byId(state.areas, bubbleAreaId);
     const q = bubbleQueryId != null && byId(state.queries, bubbleQueryId);
-    if (!q) return;
-    $('#bubble').css({ left: q.x * view.s + view.tx, top: q.y * view.s + view.ty });
+    if (a) {                       // above the area's label
+      const lb = areaLabel(a);
+      x = lb.lx; y = lb.ly - labelGeom(lb).h / 2;
+    } else if (q) {
+      x = q.x; y = q.y;
+    } else return;
+    $('#bubble').css({ left: x * view.s + view.tx, top: y * view.s + view.ty });
   }
 
   $('#bubble').on('pointerdown wheel', e => e.stopPropagation())
     .on('click', '[data-bubble]', function () {
-      const q = byId(state.queries, bubbleQueryId);
       const act = $(this).attr('data-bubble');
+      const a = byId(state.areas, bubbleAreaId);
+      if (a && act === 'copy-area') { copy(Math.round(areaMetrics(a.points).area) + ' m²'); return; }
+      if (a && act === 'edit-area') { openAreaModal(a.id); return; }
+      const q = byId(state.queries, bubbleQueryId);
       if (act === 'close' || !q) hideBubble();
       else if (act === 'copy') copy(G.formatDecimal(geo.toLatLon(q.x, q.y)));
       else if (act === 'label') openLabelModal(null, q.x, q.y);
@@ -1210,7 +1246,7 @@ $(function () {
     }
     clearTimeout(clearArmed); clearArmed = null;
     $(this).html('<i class="bi bi-trash"></i> Clear everything');
-    state.controlPoints = []; state.queries = []; state.labels = []; state.areas = []; bubbleQueryId = null;
+    state.controlPoints = []; state.queries = []; state.labels = []; state.areas = []; bubbleQueryId = null; bubbleAreaId = null;
     renderAll(); save();
   });
 
