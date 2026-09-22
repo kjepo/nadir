@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nadir Georeferencer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%225%22 fill=%22none%22 stroke=%22%23ffc107%22 stroke-width=%222%22/%3E%3Cpath d=%22M8 0v5M8 11v5M0 8h5M11 8h5%22 stroke=%22%23ffc107%22 stroke-width=%221.5%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<nav class="navbar navbar-expand bg-dark border-bottom border-secondary px-2 py-1" data-bs-theme="dark">
+  <span class="navbar-brand fw-semibold me-3"><i class="bi bi-crosshair2"></i> Nadir</span>
+
+  <label class="btn btn-sm btn-primary me-3 mb-0" title="Open a nadir image (or drop it on the page)">
+    <i class="bi bi-folder2-open"></i> <span class="d-none d-md-inline">Open image</span>
+    <input type="file" id="file-image" accept="image/*" hidden>
+  </label>
+
+  <div class="btn-group btn-group-sm me-3" role="group" id="modes">
+    <input type="radio" class="btn-check" name="mode" id="mode-pan" value="pan" checked>
+    <label class="btn btn-outline-light" for="mode-pan" title="Pan / select (P or Esc)"><i class="bi bi-arrows-move"></i> <span class="d-none d-lg-inline">Pan</span></label>
+    <input type="radio" class="btn-check" name="mode" id="mode-cp" value="cp">
+    <label class="btn btn-outline-warning" for="mode-cp" title="Add control point: click a spot and enter its coordinates (C)"><i class="bi bi-geo"></i> <span class="d-none d-lg-inline">Control point</span></label>
+    <input type="radio" class="btn-check" name="mode" id="mode-query" value="query">
+    <label class="btn btn-outline-info" for="mode-query" title="Query location: click anywhere to get its coordinates (Q)"><i class="bi bi-question-diamond"></i> <span class="d-none d-lg-inline">Query</span></label>
+    <input type="radio" class="btn-check" name="mode" id="mode-label" value="label">
+    <label class="btn btn-outline-success" for="mode-label" title="Add label: click the location to label (L)"><i class="bi bi-tag"></i> <span class="d-none d-lg-inline">Label</span></label>
+  </div>
+
+  <div class="btn-group btn-group-sm me-auto">
+    <button class="btn btn-outline-secondary" id="zoom-out" title="Zoom out (−)"><i class="bi bi-zoom-out"></i></button>
+    <button class="btn btn-outline-secondary" id="zoom-fit" title="Fit image (0)"><span id="zoom-level">–</span></button>
+    <button class="btn btn-outline-secondary" id="zoom-in" title="Zoom in (+)"><i class="bi bi-zoom-in"></i></button>
+  </div>
+
+  <div class="dropdown">
+    <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-box-seam"></i> <span class="d-none d-md-inline">Project</span></button>
+    <ul class="dropdown-menu dropdown-menu-end">
+      <li><button class="dropdown-item" id="btn-save"><i class="bi bi-download"></i> Save project (.json)</button></li>
+      <li><label class="dropdown-item mb-0"><i class="bi bi-upload"></i> Load project…<input type="file" id="file-project" accept=".json,application/json" hidden></label></li>
+      <li><hr class="dropdown-divider"></li>
+      <li><button class="dropdown-item" id="btn-export"><i class="bi bi-image"></i> Export labelled image (.jpg)</button></li>
+      <li><hr class="dropdown-divider"></li>
+      <li><button class="dropdown-item text-danger" id="btn-clear"><i class="bi bi-trash"></i> Clear all points &amp; labels</button></li>
+    </ul>
+  </div>
+  <button class="btn btn-sm btn-outline-light ms-2" data-bs-toggle="modal" data-bs-target="#modal-help" title="Help"><i class="bi bi-question-lg"></i></button>
+</nav>
+
+<div id="main">
+  <div id="viewport" class="mode-pan">
+    <div id="empty" class="text-center">
+      <i class="bi bi-image display-3 d-block mb-3 opacity-50"></i>
+      <p class="lead mb-1">Open or drop a nadir image to begin</p>
+      <p class="small text-secondary">Everything stays in your browser. Nothing is uploaded.</p>
+    </div>
+    <div id="stage">
+      <img id="photo" alt="" draggable="false">
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg">
+        <g id="layer-labels"></g>
+        <g id="layer-markers"></g>
+      </svg>
+    </div>
+    <div id="bubble" class="card shadow d-none"></div>
+    <div id="mode-hint" class="small"></div>
+  </div>
+
+  <aside id="sidebar" class="bg-body-tertiary border-start">
+    <!-- Calibration -->
+    <section class="p-3 border-bottom">
+      <h6 class="d-flex align-items-center mb-2">
+        <i class="bi bi-geo text-warning me-2"></i>Control points
+        <span class="badge text-bg-secondary ms-2" id="cp-count">0</span>
+      </h6>
+      <select class="form-select form-select-sm mb-2" id="method" title="Transform model"></select>
+      <div id="calib-status" class="small mb-2"></div>
+      <ul class="list-group list-group-flush small" id="cp-list"></ul>
+    </section>
+
+    <!-- Queries -->
+    <section class="p-3 border-bottom">
+      <h6 class="d-flex align-items-center mb-2">
+        <i class="bi bi-question-diamond text-info me-2"></i>Queried locations
+        <button class="btn btn-link btn-sm ms-auto p-0 text-secondary" id="q-clear" title="Clear all queries">clear</button>
+      </h6>
+      <div class="input-group input-group-sm mb-2">
+        <input type="text" class="form-control" id="find-input" placeholder="Find lat, lon in image…">
+        <button class="btn btn-outline-secondary" id="find-btn" title="Mark this coordinate in the image"><i class="bi bi-search"></i></button>
+      </div>
+      <ul class="list-group list-group-flush small" id="q-list"></ul>
+    </section>
+
+    <!-- Labels -->
+    <section class="p-3">
+      <h6 class="d-flex align-items-center mb-2">
+        <i class="bi bi-tag text-success me-2"></i>Labels
+        <button class="btn btn-outline-success btn-sm ms-auto py-0" id="label-at-coords" title="Add a label at a coordinate"><i class="bi bi-plus"></i> at coordinate</button>
+      </h6>
+      <ul class="list-group list-group-flush small" id="label-list"></ul>
+    </section>
+  </aside>
+</div>
+
+<footer id="statusbar" class="border-top small px-3 d-flex gap-3">
+  <span id="status-px">–</span>
+  <span id="status-ll" class="text-truncate"></span>
+  <span id="status-file" class="ms-auto text-secondary text-truncate"></span>
+</footer>
+
+<!-- Control point modal -->
+<div class="modal fade" id="modal-cp" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="form-cp" autocomplete="off">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-geo text-warning"></i> <span id="cp-title">Control point</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label" for="cp-coords">Latitude, longitude</label>
+        <input type="text" class="form-control font-monospace" id="cp-coords" placeholder="61.128514, 14.535017">
+        <div class="form-text" id="cp-parsed">&nbsp;</div>
+        <div class="form-text">Tip: in Google Maps, right-click the same spot and click the coordinates at the top of the menu to copy them. DMS such as <code>61°7'42.6"N 14°32'06.1"E</code> also works.</div>
+        <label class="form-label mt-3" for="cp-name">Note <span class="text-secondary">(optional)</span></label>
+        <input type="text" class="form-control" id="cp-name" placeholder="e.g. corner of jetty">
+        <div class="form-text mt-2" id="cp-pixel"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger me-auto" id="cp-delete">Delete</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-warning">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Label modal -->
+<div class="modal fade" id="modal-label" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <form class="modal-content" id="form-label" autocomplete="off">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-tag text-success"></i> <span id="label-title">Label</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label" for="label-name">Name</label>
+        <input type="text" class="form-control" id="label-name" placeholder="e.g. Boathouse" required>
+
+        <label class="form-label mt-3">Colour</label>
+        <div class="d-flex flex-wrap align-items-center gap-2" id="swatches"></div>
+
+        <div class="row g-3 mt-1">
+          <div class="col-6">
+            <label class="form-label" for="label-shape">Shape</label>
+            <select class="form-select" id="label-shape">
+              <option value="pill">Pill</option>
+              <option value="ellipse">Ellipse</option>
+              <option value="rounded">Rounded box</option>
+            </select>
+          </div>
+          <div class="col-6">
+            <label class="form-label" for="label-size">Text size <span class="text-secondary" id="label-size-val"></span></label>
+            <input type="range" class="form-range mt-2" id="label-size" min="0.4" max="3" step="0.05" value="1">
+          </div>
+        </div>
+
+        <label class="form-label mt-3" for="label-coords">Location</label>
+        <input type="text" class="form-control font-monospace" id="label-coords" placeholder="lat, lon">
+        <div class="form-text" id="label-coords-hint"></div>
+
+        <div class="mt-3 p-2 rounded border text-center" id="label-preview-wrap">
+          <svg id="label-preview" height="70" width="100%"></svg>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger me-auto" id="label-delete">Delete</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-success">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Help modal -->
+<div class="modal fade" id="modal-help" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">How it works</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <ol>
+          <li class="mb-2"><b>Open</b> a nadir photo (the camera pointing straight down). You can also drop it on the page.</li>
+          <li class="mb-2"><b><i class="bi bi-geo text-warning"></i> Control points:</b> click a feature you can also find on a map, such as a building corner, jetty end or road marking, and paste its coordinates. Two points are enough. A third or later point shows how accurate the fit is (<i>residuals</i>). Spread the points out as far as you can.</li>
+          <li class="mb-2"><b><i class="bi bi-question-diamond text-info"></i> Query:</b> after calibration, click any spot to get its latitude/longitude. You can copy it or open it in Google Maps. The status bar shows live coordinates under the cursor. To go the other way, type a coordinate into <i>Find</i> to mark where it is in the image.</li>
+          <li class="mb-2"><b><i class="bi bi-tag text-success"></i> Labels:</b> click a location, then enter a name and pick a colour. Drag the label body to move it. The pointer stays attached to the location, and you can drag the dot at its tip to move the location itself.</li>
+        </ol>
+        <h6>Transform models</h6>
+        <ul class="small">
+          <li><b>Similarity</b> (≥2 points): scale, rotation and shift. This is the right model for a true nadir shot over roughly flat ground.</li>
+          <li><b>Affine</b> (≥3): also allows unequal scale and shear.</li>
+          <li><b>Projective</b> (≥4): corrects a slightly tilted camera. Needs well-spread points.</li>
+        </ul>
+        <p class="small text-secondary mb-2">Accuracy depends mostly on your control points. A nadir image is only truly to scale on flat ground, and rooftops and treetops shift slightly outwards from the image centre.</p>
+        <h6>Shortcuts</h6>
+        <p class="small mb-0"><kbd>P</kbd>/<kbd>Esc</kbd> pan · <kbd>C</kbd> control point · <kbd>Q</kbd> query · <kbd>L</kbd> label · <kbd>+</kbd>/<kbd>−</kbd> zoom · <kbd>0</kbd> fit · scroll wheel zooms · drag to pan in any mode.</p>
+        <p class="small mb-0 mt-2">Your work is autosaved in this browser for each image, and <i>Project → Save</i> exports it as a file.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container position-fixed start-0 p-3" id="toasts" style="bottom: 28px"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="js/georef.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
