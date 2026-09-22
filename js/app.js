@@ -4,7 +4,9 @@ $(function () {
 
   const G = window.Georef;
   const NS = 'http://www.w3.org/2000/svg';
-  const FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  // Labels use a web font so they look (and measure) the same in every browser and in the export.
+  const FONT_FAMILY = 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  const LABEL_FONT_READY = document.fonts ? document.fonts.load('600 16px Inter').catch(() => {}) : Promise.resolve();
   const COLORS = ['#e63946', '#f77f00', '#ffd60a', '#52b788', '#2a9d8f', '#1d6fe0', '#7b2cbf', '#ff4d9d', '#ffffff', '#1a1a1a'];
   const MAX_ZOOM = 16;
 
@@ -387,11 +389,14 @@ $(function () {
   function baseFont() { return Math.max(12, Math.round(Math.max(image.W, image.H) / 70)); }
 
   // Shared label geometry for the SVG overlay, the modal preview and JPEG export.
-  function labelGeom(lb, fsOverride) {
-    const fs = fsOverride || baseFont() * (lb.scale || 1);
+  function labelFontSize(lb, fsOverride) { return fsOverride || baseFont() * (lb.scale || 1); }
+
+  // textWidth: the rendered width when known (SVG); otherwise measured on a canvas.
+  function labelGeom(lb, fsOverride, textWidth) {
+    const fs = labelFontSize(lb, fsOverride);
     const font = `600 ${fs}px ${FONT_FAMILY}`;
     measureCtx.font = font;
-    const tw = measureCtx.measureText(lb.name || ' ').width;
+    const tw = textWidth || measureCtx.measureText(lb.name || ' ').width;
     let w, h, r;
     if (lb.shape === 'ellipse') { h = fs * 2.1; w = tw * 1.2 + fs * 1.6; r = null; }
     else { h = fs * 1.7; w = tw + fs * 1.5; r = lb.shape === 'rounded' ? fs * 0.35 : h / 2; }
@@ -410,19 +415,25 @@ $(function () {
   // Body and pointer are drawn as one outlined shape: first both outlines (at double
   // width, since the fill then covers the inner half), then both fills on top, so no
   // outline shows where the pointer meets the body.
-  function drawLabelSvg(parent, lb, g, id) {
+  function drawLabelSvg(parent, lb, fsOverride, id) {
     const grp = svg('g', id != null ? { 'data-drag': 'label', 'data-id': id } : {}, parent);
+    // Render the text first so the body can be sized to its actual on-screen width.
+    const t = svg('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': FONT_FAMILY,
+                            'font-weight': 600, 'font-size': labelFontSize(lb, fsOverride), 'pointer-events': 'none' }, grp);
+    t.textContent = lb.name;
+    let tw = 0;
+    try { tw = t.getComputedTextLength(); } catch (e) { /* not rendered yet */ }
+    const g = labelGeom(lb, fsOverride, tw);
+    t.setAttribute('x', g.cx); t.setAttribute('y', g.cy); t.setAttribute('fill', g.text);
+
     const outline = { fill: g.edge, stroke: g.edge, 'stroke-width': g.stroke * 2, 'stroke-linejoin': 'round' };
     const fill = { fill: g.fill };
     for (const style of [outline, fill]) {
-      if (g.wedge) svg('polygon', { points: g.wedge.map(p => p.join(',')).join(' '), ...style }, grp);
-      if (g.r == null) svg('ellipse', { cx: g.cx, cy: g.cy, rx: g.w / 2, ry: g.h / 2, ...style }, grp);
-      else svg('rect', { x: g.cx - g.w / 2, y: g.cy - g.h / 2, width: g.w, height: g.h, rx: g.r, ...style }, grp);
+      if (g.wedge) grp.insertBefore(svg('polygon', { points: g.wedge.map(p => p.join(',')).join(' '), ...style }), t);
+      grp.insertBefore(g.r == null
+        ? svg('ellipse', { cx: g.cx, cy: g.cy, rx: g.w / 2, ry: g.h / 2, ...style })
+        : svg('rect', { x: g.cx - g.w / 2, y: g.cy - g.h / 2, width: g.w, height: g.h, rx: g.r, ...style }), t);
     }
-    const t = svg('text', { x: g.cx, y: g.cy, fill: g.text, 'text-anchor': 'middle', 'dominant-baseline': 'central',
-                            'font-family': FONT_FAMILY, 'font-weight': 600, 'font-size': g.fs,
-                            'pointer-events': 'none' }, grp);
-    t.textContent = lb.name;
     const dot = svg('circle', { cx: lb.x, cy: lb.y, r: g.dot, fill: g.fill, stroke: g.edge, 'stroke-width': g.stroke }, grp);
     if (id != null) { dot.setAttribute('data-drag', 'anchor'); dot.setAttribute('data-id', id); }
     return grp;
@@ -456,7 +467,7 @@ $(function () {
 
   function renderLabels() {
     $(layerLabels).empty();
-    state.labels.forEach(lb => drawLabelSvg(layerLabels, lb, labelGeom(lb), lb.id));
+    state.labels.forEach(lb => drawLabelSvg(layerLabels, lb, null, lb.id));
   }
 
   // Control points and query markers keep a constant on-screen size.
@@ -812,7 +823,7 @@ $(function () {
     lb.lx = Math.max(g.w / 2 + 70, 150); lb.ly = Math.min(26, 58 - g.h / 2 - 6);
     const wbox = el.clientWidth || 400;
     lb.lx = Math.min(lb.lx, wbox - g.w / 2 - 6);
-    drawLabelSvg(el, lb, labelGeom(lb, fs));
+    drawLabelSvg(el, lb, fs);
     $('#label-size-val').text(Math.round(baseFont() * f.scale) + ' px');
   }
 
@@ -886,8 +897,10 @@ $(function () {
     c.width = image.W; c.height = image.H;
     const ctx = c.getContext('2d');
     ctx.drawImage(photo, 0, 0);
-    state.labels.forEach(lb => drawLabelCanvas(ctx, lb));
-    c.toBlob(b => b ? download(b, baseName() + '-labelled.jpg') : toast('Export failed', 'danger'), 'image/jpeg', 0.92);
+    LABEL_FONT_READY.then(() => {
+      state.labels.forEach(lb => drawLabelCanvas(ctx, lb));
+      c.toBlob(b => b ? download(b, baseName() + '-labelled.jpg') : toast('Export failed', 'danger'), 'image/jpeg', 0.92);
+    });
   });
 
   let clearArmed = null;
@@ -1146,6 +1159,7 @@ $(function () {
 
   renderMethodSelect();
   renderAll();
+  LABEL_FONT_READY.then(() => { if (image.loaded) renderLabels(); });
   setMode('pan');
 
   const sharedId = new URLSearchParams(location.search).get('p');
