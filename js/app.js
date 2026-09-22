@@ -152,7 +152,7 @@ $(function () {
       $(overlay).attr({ width: image.W, height: image.H, viewBox: `0 0 ${image.W} ${image.H}` });
       $vp.addClass('has-image');
       $('#status-file').text(`${file.name} · ${image.W}×${image.H}`);
-      $('#btn-share').prop('disabled', false);
+      $('#btn-share, #btn-export-top').prop('disabled', false);
 
       restore({});
       let restored = false;
@@ -867,7 +867,7 @@ $(function () {
     download(new Blob([JSON.stringify(snapshot(), null, 2)], { type: 'application/json' }), baseName() + '.nadir.json');
   });
 
-  $('#btn-export').on('click', () => {
+  $('#btn-export, #btn-export-top').on('click', () => {
     if (!image.loaded) { toast('Open an image first', 'warning'); return; }
     const c = document.createElement('canvas');
     c.width = image.W; c.height = image.H;
