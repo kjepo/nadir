@@ -303,12 +303,26 @@
     };
   }
 
+  // Area (m²) and perimeter (m) of a polygon given as [{lat, lon}, ...].
+  function polygonMetrics(latlons) {
+    if (latlons.length < 3) return { area: 0, perimeter: 0 };
+    const frame = makeFrame(latlons);
+    const pts = latlons.map(p => frame.toLocal(p.lat, p.lon));
+    let twice = 0, perimeter = 0;
+    pts.forEach(([x0, y0], i) => {
+      const [x1, y1] = pts[(i + 1) % pts.length];
+      twice += x0 * y1 - x1 * y0;
+      perimeter += Math.hypot(x1 - x0, y1 - y0);
+    });
+    return { area: Math.abs(twice) / 2, perimeter };
+  }
+
   function compass(deg) {
     const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     return names[Math.round(deg / 45) % 8];
   }
 
-  const api = { METHODS, parseLatLon, formatDecimal, formatDMS, fit, compass };
+  const api = { METHODS, parseLatLon, formatDecimal, formatDMS, fit, compass, polygonMetrics };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Georef = api;
 })(this);

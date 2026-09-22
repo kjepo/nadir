@@ -76,3 +76,11 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
 #share-status a { color: #6edff6; }
 #share-status .saving { color: #ffda6a; }
 #share-status .failed { color: #ff8a8a; }
+
+/* Areas: clickable to edit in Pan mode; transparent to clicks in the other modes. */
+.area-body { cursor: pointer !important; }
+#viewport:not(.mode-pan) .area-body { pointer-events: none; }
+#viewport.mode-area { cursor: crosshair; }
+.swatch-area { flex: none; display: inline-block; width: .95rem; height: .8rem; border-radius: 2px; border: 2px solid; }
+/* While drawing an area, clicks always add corners. */
+#viewport.drawing #layer-labels, #viewport.drawing #layer-markers { pointer-events: none; }

@@ -16,23 +16,27 @@ $(function () {
     controlPoints: [],   // {id, x, y, lat, lon, note}
     queries: [],         // {id, n, x, y}
     labels: [],          // {id, name, color, shape, scale, x, y, lx, ly}
+    areas: [],           // {id, name, color, shape, scale, opacity, showSize, points: [[x, y], ...], ox, oy}
     method: 'similarity',
   };
   const image = { loaded: false, name: '', size: 0, W: 0, H: 0, url: null };
   const view = { s: 1, tx: 0, ty: 0 };
-  const labelDefaults = { color: COLORS[0], shape: 'pill', scale: 1 };
+  const labelDefaults = { color: COLORS[0], shape: 'pill', scale: 1, opacity: 0.25, showSize: false };
   let mode = 'pan';
   let geo = { ok: false };
   let nextId = 1;
   let queryCounter = 0;
   let bubbleQueryId = null;
+  let drawing = null;       // corners of the area being drawn, [[x, y], ...]
+  let draftCursor = null;   // cursor position while drawing (rubber band)
+  let draftGroup = null;
   // Shared project on the server. serverSnap is the JSON of the last version known to be saved there.
   const share = { id: null, token: null, version: 0, canEdit: false, serverSnap: null,
                   saving: false, dirty: false, error: null, timer: null };
 
   const $vp = $('#viewport'), vp = $vp[0];
   const $stage = $('#stage'), photo = $('#photo')[0], overlay = $('#overlay')[0];
-  const layerLabels = $('#layer-labels')[0], layerMarkers = $('#layer-markers')[0];
+  const layerAreas = $('#layer-areas')[0], layerLabels = $('#layer-labels')[0], layerMarkers = $('#layer-markers')[0];
   const measureCtx = document.createElement('canvas').getContext('2d');
   const modalCp = new bootstrap.Modal('#modal-cp');
   const modalLabel = new bootstrap.Modal('#modal-label');
@@ -102,7 +106,7 @@ $(function () {
       app: 'nadir-georeferencer', version: 1,
       image: { name: image.name, width: image.W, height: image.H },
       method: state.method, controlPoints: state.controlPoints,
-      queries: state.queries, labels: state.labels, labelDefaults,
+      queries: state.queries, labels: state.labels, areas: state.areas, labelDefaults,
     };
   }
 
@@ -129,9 +133,11 @@ $(function () {
     state.controlPoints = arr(data.controlPoints).filter(p => isFinite(p.x) && isFinite(p.lat) && isFinite(p.lon));
     state.queries = arr(data.queries).filter(q => isFinite(q.x));
     state.labels = arr(data.labels).filter(l => isFinite(l.x) && isFinite(l.lx));
+    state.areas = arr(data.areas).filter(a => Array.isArray(a.points) && a.points.length >= 3);
+    drawing = null;
     state.method = G.METHODS[data.method] ? data.method : 'similarity';
     if (data.labelDefaults) Object.assign(labelDefaults, data.labelDefaults);
-    const all = [...state.controlPoints, ...state.queries, ...state.labels];
+    const all = [...state.controlPoints, ...state.queries, ...state.labels, ...state.areas];
     nextId = all.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
     all.forEach(o => { if (!o.id) o.id = nextId++; });
     queryCounter = state.queries.reduce((m, q) => Math.max(m, q.n || 0), 0);
@@ -274,31 +280,53 @@ $(function () {
     ptr = { id: e.pointerId, cx: e.clientX, cy: e.clientY, moved: false, start,
             tx: view.tx, ty: view.ty };
     if ($t.length) {
-      ptr.drag = { type: $t.attr('data-drag'), id: +$t.attr('data-id') };
-      const o = dragObject(ptr.drag);
-      ptr.orig = o && { x: o.x, y: o.y, lx: o.lx, ly: o.ly };
+      const type = $t.attr('data-drag'), id = +$t.attr('data-id');
+      if (type === 'area') {
+        ptr.click = { type, id };            // clicking an area edits it; dragging on it pans
+      } else {
+        ptr.drag = { type, id, index: +$t.attr('data-index') };
+        const o = dragObject(ptr.drag);
+        ptr.orig = !o || type === 'midpoint' ? null     // a midpoint becomes a corner once dragged
+          : type === 'vertex' ? [...o.points[ptr.drag.index]]
+          : type === 'arealabel' ? { ox: o.ox || 0, oy: o.oy || 0 }
+          : { x: o.x, y: o.y, lx: o.lx, ly: o.ly };
+      }
     }
     vp.setPointerCapture(e.pointerId);
   });
 
   vp.addEventListener('pointermove', e => {
-    if (image.loaded) updateStatus(clientToImage(e));
+    if (image.loaded) {
+      const pt = clientToImage(e);
+      updateStatus(pt);
+      if (drawing) { draftCursor = [pt.x, pt.y]; renderDraft(); }
+    }
     if (!ptr || e.pointerId !== ptr.id) return;
     const dx = e.clientX - ptr.cx, dy = e.clientY - ptr.cy;
     if (!ptr.moved && Math.hypot(dx, dy) > 4) {
       ptr.moved = true;
       if (!ptr.drag) $vp.addClass('panning');
+      if (ptr.drag && ptr.drag.type === 'midpoint') {
+        const a = dragObject(ptr.drag), i = ptr.drag.index;
+        const [x0, y0] = a.points[i], [x1, y1] = a.points[(i + 1) % a.points.length];
+        a.points.splice(i + 1, 0, [(x0 + x1) / 2, (y0 + y1) / 2]);
+        ptr.drag = { type: 'vertex', id: a.id, index: i + 1 };
+        ptr.orig = [...a.points[i + 1]];
+      }
     }
     if (!ptr.moved) return;
     if (ptr.drag && ptr.orig) {
       const o = dragObject(ptr.drag);
       const ix = dx / view.s, iy = dy / view.s;
-      if (ptr.drag.type === 'label') { o.lx = ptr.orig.lx + ix; o.ly = ptr.orig.ly + iy; }
+      const type = ptr.drag.type;
+      if (type === 'label') { o.lx = ptr.orig.lx + ix; o.ly = ptr.orig.ly + iy; }
+      else if (type === 'arealabel') { o.ox = ptr.orig.ox + ix; o.oy = ptr.orig.oy + iy; }
+      else if (type === 'vertex') o.points[ptr.drag.index] = [ptr.orig[0] + ix, ptr.orig[1] + iy];
       else { o.x = ptr.orig.x + ix; o.y = ptr.orig.y + iy; }
-      if (ptr.drag.type === 'cp') computeFit();
+      if (type === 'cp') computeFit();
       renderOverlay();
       positionBubble();
-    } else {
+    } else if (!ptr.drag) {
       view.tx = ptr.tx + dx; view.ty = ptr.ty + dy;
       applyView();
     }
@@ -312,7 +340,10 @@ $(function () {
     if (p.moved) {
       if (p.drag) { save(); renderAll(); }
     } else if (p.drag) {
-      objectClicked(p.drag);
+      if (p.drag.type === 'vertex' && e.altKey) deleteVertex(p.drag);
+      else if (p.drag.type !== 'vertex' && p.drag.type !== 'midpoint') objectClicked(p.drag);
+    } else if (p.click) {
+      objectClicked(p.click);
     } else {
       imageClicked(p.start.x, p.start.y);
     }
@@ -323,6 +354,7 @@ $(function () {
 
   function dragObject(d) {
     if (d.type === 'cp') return byId(state.controlPoints, d.id);
+    if (['area', 'arealabel', 'vertex', 'midpoint'].includes(d.type)) return byId(state.areas, d.id);
     if (d.type === 'query') return byId(state.queries, d.id);
     return byId(state.labels, d.id);   // 'label' (body) or 'anchor' (tip)
   }
@@ -333,11 +365,13 @@ $(function () {
     if (mode === 'cp') openCpModal(null, x, y);
     else if (mode === 'query') addQuery(x, y, true);
     else if (mode === 'label') openLabelModal(null, x, y);
+    else if (mode === 'area') addDraftPoint(x, y);
   }
 
   function objectClicked(d) {
     if (d.type === 'cp') openCpModal(d.id);
     else if (d.type === 'query') showBubble(d.id);
+    else if (d.type === 'area' || d.type === 'arealabel') openAreaModal(d.id);
     else openLabelModal(d.id);
   }
 
@@ -358,14 +392,21 @@ $(function () {
   };
 
   function setMode(m) {
+    if (m !== 'area' && drawing) cancelDraft();
     mode = m;
     $('#mode-' + m).prop('checked', true);
-    $vp.removeClass('mode-pan mode-cp mode-query mode-label').addClass('mode-' + m);
+    $vp.removeClass('mode-pan mode-cp mode-query mode-label mode-area').addClass('mode-' + m);
+    renderMarkers();   // corner handles are shown in Area mode only
     updateHint();
   }
   function updateHint() {
     let h = HINTS[mode];
     if (mode === 'query' && !geo.ok) h = 'Add control points first. ' + (geo.error || '');
+    if (mode === 'area') {
+      h = !drawing ? 'Click to start an area. Drag corners to reshape, drag midpoints to add a corner, Alt-click a corner to delete it.'
+        : drawing.length < 3 ? 'Click to add corners · Backspace undoes · Esc cancels'
+        : 'Click the first corner, double-click or press Enter to finish · Backspace undoes · Esc cancels';
+    }
     $('#mode-hint').text(image.loaded ? h : '');
   }
   $('input[name=mode]').on('change', function () { setMode(this.value); });
@@ -373,7 +414,15 @@ $(function () {
   $(document).on('keydown', e => {
     if ($(e.target).is('input, textarea, select') || $('.modal.show').length || e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key.toLowerCase();
+    if (drawing && (k === 'escape' || k === 'enter' || k === 'backspace')) {
+      if (k === 'escape') cancelDraft();
+      else if (k === 'enter') finishArea();
+      else { drawing.pop(); if (drawing.length) { renderMarkers(); updateHint(); } else cancelDraft(); }
+      e.preventDefault();
+      return;
+    }
     if (k === 'escape' || k === 'p') { setMode('pan'); hideBubble(); }
+    else if (k === 'a') setMode('area');
     else if (k === 'c') setMode('cp');
     else if (k === 'q') setMode('query');
     else if (k === 'l') setMode('label');
@@ -415,8 +464,9 @@ $(function () {
   // Body and pointer are drawn as one outlined shape: first both outlines (at double
   // width, since the fill then covers the inner half), then both fills on top, so no
   // outline shows where the pointer meets the body.
-  function drawLabelSvg(parent, lb, fsOverride, id) {
-    const grp = svg('g', id != null ? { 'data-drag': 'label', 'data-id': id } : {}, parent);
+  // lb.noDot: skip the anchor dot unless there is a pointer (area labels sit inside their area).
+  function drawLabelSvg(parent, lb, fsOverride, id, dragType) {
+    const grp = svg('g', id != null ? { 'data-drag': dragType || 'label', 'data-id': id } : {}, parent);
     // Render the text first so the body can be sized to its actual on-screen width.
     const t = svg('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-family': FONT_FAMILY,
                             'font-weight': 600, 'font-size': labelFontSize(lb, fsOverride), 'pointer-events': 'none' }, grp);
@@ -434,8 +484,9 @@ $(function () {
         ? svg('ellipse', { cx: g.cx, cy: g.cy, rx: g.w / 2, ry: g.h / 2, ...style })
         : svg('rect', { x: g.cx - g.w / 2, y: g.cy - g.h / 2, width: g.w, height: g.h, rx: g.r, ...style }), t);
     }
+    if (lb.noDot && !g.wedge) return grp;
     const dot = svg('circle', { cx: lb.x, cy: lb.y, r: g.dot, fill: g.fill, stroke: g.edge, 'stroke-width': g.stroke }, grp);
-    if (id != null) { dot.setAttribute('data-drag', 'anchor'); dot.setAttribute('data-id', id); }
+    if (id != null && !dragType) { dot.setAttribute('data-drag', 'anchor'); dot.setAttribute('data-id', id); }
     return grp;
   }
 
@@ -460,14 +511,166 @@ $(function () {
     paths.forEach(p => ctx.fill(p));
     ctx.fillStyle = g.text; ctx.font = g.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(lb.name, g.cx, g.cy);
-    ctx.fillStyle = g.fill; ctx.strokeStyle = g.edge; ctx.lineWidth = g.stroke;
-    ctx.beginPath(); ctx.arc(lb.x, lb.y, g.dot, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    if (!lb.noDot || g.wedge) {
+      ctx.fillStyle = g.fill; ctx.strokeStyle = g.edge; ctx.lineWidth = g.stroke;
+      ctx.beginPath(); ctx.arc(lb.x, lb.y, g.dot, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
     ctx.restore();
   }
 
   function renderLabels() {
     $(layerLabels).empty();
+    state.areas.forEach(a => drawLabelSvg(layerLabels, areaLabel(a), null, a.id, 'arealabel'));
     state.labels.forEach(lb => drawLabelSvg(layerLabels, lb, null, lb.id));
+  }
+
+  /* ---------- Areas ---------- */
+
+  function pointInPolygon(x, y, pts) {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i], [xj, yj] = pts[j];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Where an area's label attaches: its centroid, or, for a concave shape whose
+  // centroid falls outside, the middle of the widest run across the centroid's row.
+  function areaAnchor(pts) {
+    let a = 0, cx = 0, cy = 0;
+    pts.forEach(([x0, y0], i) => {
+      const [x1, y1] = pts[(i + 1) % pts.length], f = x0 * y1 - x1 * y0;
+      a += f; cx += (x0 + x1) * f; cy += (y0 + y1) * f;
+    });
+    const mean = [pts.reduce((t, p) => t + p[0], 0) / pts.length, pts.reduce((t, p) => t + p[1], 0) / pts.length];
+    if (Math.abs(a) < 1e-9) return mean;
+    cx /= 3 * a; cy /= 3 * a;
+    if (pointInPolygon(cx, cy, pts)) return [cx, cy];
+    const xs = [];
+    pts.forEach(([x0, y0], i) => {
+      const [x1, y1] = pts[(i + 1) % pts.length];
+      if ((y0 > cy) !== (y1 > cy)) xs.push(x0 + (cy - y0) * (x1 - x0) / (y1 - y0));
+    });
+    xs.sort((p, q) => p - q);
+    let best = null;
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      if (!best || xs[i + 1] - xs[i] > best[1] - best[0]) best = [xs[i], xs[i + 1]];
+    }
+    return best ? [(best[0] + best[1]) / 2, cy] : mean;
+  }
+
+  function areaMetrics(points) {
+    if (!geo.ok) return null;
+    const lls = points.map(([x, y]) => geo.toLatLon(x, y));
+    return lls.every(Boolean) ? G.polygonMetrics(lls) : null;
+  }
+
+  function fmtArea(m2) {
+    if (m2 < 1e4) return Math.round(m2).toLocaleString() + ' m²';
+    if (m2 < 1e6) return (m2 / 1e4).toFixed(2) + ' ha';
+    return (m2 / 1e6).toFixed(2) + ' km²';
+  }
+
+  function areaLabelText(name, points, showSize) {
+    const m = showSize && areaMetrics(points);
+    return m ? `${name} · ${fmtArea(m.area)}` : name;
+  }
+
+  // An area's label, in the same form as a point label.
+  function areaLabel(a) {
+    const [x, y] = areaAnchor(a.points);
+    return { name: areaLabelText(a.name, a.points, a.showSize), color: a.color, shape: a.shape, scale: a.scale,
+             x, y, lx: x + (a.ox || 0), ly: y + (a.oy || 0), noDot: true };
+  }
+
+  // Area outlines get a faint dark halo so they stay visible on any background.
+  function areaStrokeWidth() { return Math.max(1.5, baseFont() * 0.09); }
+  const AREA_HALO = 'rgba(0, 0, 0, 0.45)';
+
+  function rgba(hex, alpha) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  }
+
+  function renderAreas() {
+    $(layerAreas).empty();
+    const sw = areaStrokeWidth();
+    state.areas.forEach(a => {
+      const points = a.points.map(p => p.join(',')).join(' ');
+      svg('polygon', { points, fill: 'none', stroke: AREA_HALO, 'stroke-width': sw * 2, 'stroke-linejoin': 'round',
+                       'pointer-events': 'none' }, layerAreas);
+      svg('polygon', { points, fill: a.color, 'fill-opacity': a.opacity, stroke: a.color, 'stroke-width': sw,
+                       'stroke-linejoin': 'round', class: 'area-body', 'data-drag': 'area', 'data-id': a.id }, layerAreas);
+    });
+  }
+
+  // Corner and midpoint handles for reshaping areas (Area mode, when not drawing).
+  function renderAreaHandles(k) {
+    state.areas.forEach(a => {
+      a.points.forEach(([x0, y0], i) => {
+        const [x1, y1] = a.points[(i + 1) % a.points.length];
+        const m = svg('g', { transform: `translate(${(x0 + x1) / 2} ${(y0 + y1) / 2}) scale(${k})`,
+                             'data-drag': 'midpoint', 'data-id': a.id, 'data-index': i }, layerMarkers);
+        svg('circle', { r: 9, fill: 'transparent' }, m);
+        svg('circle', { r: 4, fill: 'rgba(255,255,255,.75)', stroke: '#000', 'stroke-width': 1.25 }, m);
+      });
+      a.points.forEach(([x, y], i) => {
+        const v = svg('g', { transform: `translate(${x} ${y}) scale(${k})`, 'data-drag': 'vertex', 'data-id': a.id, 'data-index': i }, layerMarkers);
+        svg('rect', { x: -9, y: -9, width: 18, height: 18, fill: 'transparent' }, v);
+        svg('rect', { x: -5.5, y: -5.5, width: 11, height: 11, fill: '#fff', stroke: '#000', 'stroke-width': 1.75 }, v);
+      });
+    });
+  }
+
+  // The area being drawn: its outline so far, plus a rubber band to the cursor.
+  function renderDraft() {
+    if (!draftGroup) return;
+    $(draftGroup).empty();
+    if (!drawing || !drawing.length) return;
+    const k = 1 / view.s;
+    const pts = draftCursor ? [...drawing, draftCursor] : drawing;
+    const str = pts.map(p => p.join(',')).join(' ');
+    if (pts.length >= 3) svg('polygon', { points: str, fill: labelDefaults.color, 'fill-opacity': 0.2 }, draftGroup);
+    svg('polyline', { points: str, fill: 'none', stroke: '#000', 'stroke-opacity': 0.6, 'stroke-width': 4 * k, 'stroke-linejoin': 'round' }, draftGroup);
+    svg('polyline', { points: str, fill: 'none', stroke: '#fff', 'stroke-width': 2 * k, 'stroke-dasharray': `${6 * k} ${4 * k}` }, draftGroup);
+    drawing.forEach(([x, y], i) => {
+      const closing = i === 0 && drawing.length >= 3;
+      svg('circle', { cx: x, cy: y, r: (closing ? 7 : 4.5) * k, fill: closing ? '#ffc107' : '#fff',
+                      stroke: '#000', 'stroke-width': 1.5 * k }, draftGroup);
+    });
+  }
+
+  function addDraftPoint(x, y) {
+    drawing = drawing || [];
+    const tol = 10 / view.s, near = p => Math.hypot(p[0] - x, p[1] - y) < tol;
+    const last = drawing[drawing.length - 1];
+    // Clicking the first corner, or clicking the last one again (double-click), finishes.
+    if (drawing.length >= 3 && (near(drawing[0]) || near(last))) { finishArea(); return; }
+    if (last && near(last)) return;
+    drawing.push([x, y]);
+    renderMarkers();
+    updateHint();
+  }
+
+  function finishArea() {
+    if (!drawing || drawing.length < 3) { toast('An area needs at least 3 corners'); return; }
+    const pts = drawing;
+    cancelDraft();
+    openAreaModal(null, pts);
+  }
+
+  function cancelDraft() {
+    drawing = null; draftCursor = null;
+    renderMarkers();
+    updateHint();
+  }
+
+  function deleteVertex(d) {
+    const a = dragObject(d);
+    if (a.points.length <= 3) { toast('An area needs at least 3 corners'); return; }
+    a.points.splice(d.index, 1);
+    renderAll(); save();
   }
 
   // Control points and query markers keep a constant on-screen size.
@@ -496,9 +699,13 @@ $(function () {
       const t = svg('text', { x: 10, y: -9, fill: '#0dcaf0', class: 'mk-text' }, g);
       t.textContent = 'Q' + q.n;
     });
+    $vp.toggleClass('drawing', !!drawing);
+    if (mode === 'area' && !drawing) renderAreaHandles(k);
+    draftGroup = svg('g', { 'pointer-events': 'none' }, layerMarkers);
+    renderDraft();
   }
 
-  function renderOverlay() { renderLabels(); renderMarkers(); }
+  function renderOverlay() { renderAreas(); renderLabels(); renderMarkers(); }
 
   /* ---------- Rendering: sidebar ---------- */
 
@@ -577,6 +784,20 @@ $(function () {
     });
     if (!state.labels.length) $ll.append('<li class="list-group-item text-secondary">Use <i class="bi bi-tag"></i> Label mode and click the image.</li>');
 
+    const $al = $('#area-list').empty();
+    state.areas.forEach(a => {
+      const m = areaMetrics(a.points);
+      $al.append(`<li class="list-group-item d-flex align-items-center gap-2">
+        <span class="swatch-area" style="border-color:${esc(a.color)};background:${rgba(a.color, Math.max(a.opacity, 0.1))}"></span>
+        <div class="flex-grow-1 row-click min-w-0" data-center="area:${a.id}">
+          <div class="text-truncate fw-semibold">${esc(a.name)}</div>
+          <div class="text-secondary">${m ? `${fmtArea(m.area)} · perimeter ${fmtDist(m.perimeter)}` : `${a.points.length} corners`}</div>
+        </div>
+        <button class="icon-btn" data-edit="area:${a.id}" title="Edit"><i class="bi bi-pencil"></i></button>
+        <button class="icon-btn" data-del="area:${a.id}" title="Delete"><i class="bi bi-x-lg"></i></button></li>`);
+    });
+    if (!state.areas.length) $al.append('<li class="list-group-item text-secondary">Use <i class="bi bi-pentagon"></i> Area mode and click the corners.</li>');
+
     $('#label-at-coords').prop('disabled', !geo.ok);
     updateHint();
   }
@@ -598,12 +819,16 @@ $(function () {
       const [type, id] = $(this).attr('data-center').split(':');
       const o = dragObject({ type, id: +id });
       if (!o) return;
-      if (type === 'label') centerOn((o.x + o.lx) / 2, (o.y + o.ly) / 2); else centerOn(o.x, o.y);
+      if (type === 'label') centerOn((o.x + o.lx) / 2, (o.y + o.ly) / 2);
+      else if (type === 'area') centerOn(...areaAnchor(o.points));
+      else centerOn(o.x, o.y);
       if (type === 'query') showBubble(o.id);
     })
     .on('click', '[data-edit]', function () {
       const [type, id] = $(this).attr('data-edit').split(':');
-      if (type === 'cp') openCpModal(+id); else openLabelModal(+id);
+      if (type === 'cp') openCpModal(+id);
+      else if (type === 'area') openAreaModal(+id);
+      else openLabelModal(+id);
     })
     .on('click', '[data-del]', function () {
       const [type, id] = $(this).attr('data-del').split(':');
@@ -616,7 +841,7 @@ $(function () {
     });
 
   function remove(type, id) {
-    const list = type === 'cp' ? state.controlPoints : type === 'query' ? state.queries : state.labels;
+    const list = { cp: state.controlPoints, query: state.queries, label: state.labels, area: state.areas }[type];
     const i = list.findIndex(o => o.id === id);
     if (i < 0) return;
     list.splice(i, 1);
@@ -624,6 +849,7 @@ $(function () {
     renderAll(); save();
   }
 
+  $('#area-draw').on('click', () => { if (image.loaded) setMode('area'); });
   $('#q-clear').on('click', () => { state.queries = []; bubbleQueryId = null; renderAll(); save(); });
 
   /* ---------- Queries & bubble ---------- */
@@ -789,7 +1015,7 @@ $(function () {
   function openLabelModal(id, x, y) {
     const lb = id != null ? byId(state.labels, id) : null;
     const src = lb || labelDefaults;
-    editingLabel = { id, x: lb ? lb.x : x, y: lb ? lb.y : y, prefill: '' };
+    editingLabel = { kind: 'label', id, x: lb ? lb.x : x, y: lb ? lb.y : y, prefill: '' };
     if (editingLabel.x != null && geo.ok) editingLabel.prefill = G.formatDecimal(geo.toLatLon(editingLabel.x, editingLabel.y), 7);
     $('#label-title').text(lb ? 'Edit label' : 'New label');
     $('#label-name').val(lb ? lb.name : '');
@@ -804,6 +1030,30 @@ $(function () {
       : editingLabel.x == null ? 'Enter the coordinate to label.'
       : 'Edit this to move the label to another coordinate.');
     $('#label-delete').toggle(!!lb);
+    $('#label-location-block').show();
+    $('#area-options').hide();
+    renderPreview();
+    modalLabel.show();
+  }
+
+  // points: the corners of a newly drawn area (id == null), otherwise taken from the area.
+  function openAreaModal(id, points) {
+    const a = id != null ? byId(state.areas, id) : null;
+    const src = a || labelDefaults;
+    editingLabel = { kind: 'area', id, points: a ? a.points : points, saved: false };
+    $('#label-title').text(a ? 'Edit area' : 'New area');
+    $('#label-name').val(a ? a.name : '');
+    renderSwatches(src.color);
+    $('#label-shape').val(src.shape);
+    $('#label-size').val(src.scale);
+    $('#area-opacity').val(src.opacity != null ? src.opacity : 0.25);
+    $('#area-show-size').prop('checked', !!src.showSize);
+    const m = areaMetrics(editingLabel.points);
+    $('#area-size-text').text(m ? `Size ${fmtArea(m.area)} · perimeter ${fmtDist(m.perimeter)}`
+                                : 'Add 2 or more control points to measure the area.');
+    $('#label-delete').toggle(!!a);
+    $('#label-location-block').hide();
+    $('#area-options').show();
     renderPreview();
     modalLabel.show();
   }
@@ -818,6 +1068,17 @@ $(function () {
     const el = $('#label-preview')[0];
     $(el).empty();
     const fs = Math.min(30, 18 * f.scale);
+    if (editingLabel && editingLabel.kind === 'area') {
+      const w = el.clientWidth || 400, opacity = +$('#area-opacity').val();
+      const poly = [[14, 10], [w * 0.45, 4], [w - 12, 16], [w - 26, 64], [w * 0.3, 66], [8, 48]];
+      svg('polygon', { points: poly.map(p => p.join(',')).join(' '), fill: f.color, 'fill-opacity': opacity,
+                       stroke: f.color, 'stroke-width': 2.5, 'stroke-linejoin': 'round' }, el);
+      const name = areaLabelText(f.name || 'Area name', editingLabel.points, $('#area-show-size').is(':checked'));
+      drawLabelSvg(el, { ...f, name, x: w / 2, y: 35, lx: w / 2, ly: 35, noDot: true }, fs);
+      $('#area-opacity-val').text(Math.round(opacity * 100) + '%');
+      $('#label-size-val').text(Math.round(baseFont() * f.scale) + ' px');
+      return;
+    }
     const lb = { ...f, name: f.name || 'Label name', x: 30, y: 58, lx: 0, ly: 26 };
     const g = labelGeom(lb, fs);
     lb.lx = Math.max(g.w / 2 + 70, 150); lb.ly = Math.min(26, 58 - g.h / 2 - 6);
@@ -827,16 +1088,28 @@ $(function () {
     $('#label-size-val').text(Math.round(baseFont() * f.scale) + ' px');
   }
 
-  $('#label-name, #label-shape, #label-size').on('input change', renderPreview);
+  $('#label-name, #label-shape, #label-size, #area-opacity, #area-show-size').on('input change', renderPreview);
   $('#modal-label').on('shown.bs.modal', () => {
     renderPreview();
-    $(editingLabel.x == null ? '#label-coords' : '#label-name').trigger('focus');
+    $(editingLabel.kind === 'label' && editingLabel.x == null ? '#label-coords' : '#label-name').trigger('focus');
+  });
+  // Cancelling a newly drawn area puts it back in progress rather than losing it.
+  $('#modal-label').on('hidden.bs.modal', () => {
+    const ed = editingLabel;
+    if (!ed || ed.kind !== 'area' || ed.id != null || ed.saved) return;
+    setMode('area');
+    drawing = ed.points;
+    editingLabel = null;
+    renderMarkers();
+    updateHint();
+    toast('Area not saved yet. Press Enter to finish it, or Esc to discard it.');
   });
 
   $('#form-label').on('submit', e => {
     e.preventDefault();
     const f = formLabel();
     if (!f.name) { $('#label-name').trigger('focus'); return; }
+    if (editingLabel.kind === 'area') { saveArea(f); return; }
     const $hint = $('#label-coords-hint');
 
     let x = editingLabel.x, y = editingLabel.y;
@@ -864,6 +1137,17 @@ $(function () {
     renderAll(); save();
   });
 
+  function saveArea(f) {
+    const fields = { ...f, opacity: +$('#area-opacity').val(), showSize: $('#area-show-size').is(':checked') };
+    Object.assign(labelDefaults, { color: f.color, shape: f.shape, scale: f.scale,
+                                   opacity: fields.opacity, showSize: fields.showSize });
+    if (editingLabel.id != null) Object.assign(byId(state.areas, editingLabel.id), fields);
+    else state.areas.push({ id: nextId++, ...fields, points: editingLabel.points, ox: 0, oy: 0 });
+    editingLabel.saved = true;
+    modalLabel.hide();
+    renderAll(); save();
+  }
+
   // Offset a new label's body from its anchor, leaning towards the image centre.
   function placeNewLabel(lb) {
     lb.lx = lb.x; lb.ly = lb.y;
@@ -873,7 +1157,7 @@ $(function () {
     lb.ly = lb.y + (lb.y - dy - g.h < 0 ? dy : -dy);
   }
 
-  $('#label-delete').on('click', () => { modalLabel.hide(); remove('label', editingLabel.id); });
+  $('#label-delete').on('click', () => { modalLabel.hide(); remove(editingLabel.kind, editingLabel.id); });
   $('#label-at-coords').on('click', () => openLabelModal(null, null, null));
 
   /* ---------- Project actions ---------- */
@@ -898,6 +1182,18 @@ $(function () {
     const ctx = c.getContext('2d');
     ctx.drawImage(photo, 0, 0);
     LABEL_FONT_READY.then(() => {
+      state.areas.forEach(a => {
+        const path = new Path2D();
+        a.points.forEach(([x, y], i) => i ? path.lineTo(x, y) : path.moveTo(x, y));
+        path.closePath();
+        ctx.save();
+        ctx.lineJoin = 'round';
+        ctx.strokeStyle = AREA_HALO; ctx.lineWidth = areaStrokeWidth() * 2; ctx.stroke(path);
+        ctx.fillStyle = rgba(a.color, a.opacity); ctx.fill(path);
+        ctx.strokeStyle = a.color; ctx.lineWidth = areaStrokeWidth(); ctx.stroke(path);
+        ctx.restore();
+      });
+      state.areas.forEach(a => drawLabelCanvas(ctx, areaLabel(a)));
       state.labels.forEach(lb => drawLabelCanvas(ctx, lb));
       c.toBlob(b => b ? download(b, baseName() + '-labelled.jpg') : toast('Export failed', 'danger'), 'image/jpeg', 0.92);
     });
@@ -913,8 +1209,8 @@ $(function () {
       return;
     }
     clearTimeout(clearArmed); clearArmed = null;
-    $(this).html('<i class="bi bi-trash"></i> Clear all points &amp; labels');
-    state.controlPoints = []; state.queries = []; state.labels = []; bubbleQueryId = null;
+    $(this).html('<i class="bi bi-trash"></i> Clear everything');
+    state.controlPoints = []; state.queries = []; state.labels = []; state.areas = []; bubbleQueryId = null;
     renderAll(); save();
   });
 
