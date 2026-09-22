@@ -24,6 +24,9 @@ $(function () {
   let nextId = 1;
   let queryCounter = 0;
   let bubbleQueryId = null;
+  // Shared project on the server. serverSnap is the JSON of the last version known to be saved there.
+  const share = { id: null, token: null, version: 0, canEdit: false, serverSnap: null,
+                  saving: false, dirty: false, error: null, timer: null };
 
   const $vp = $('#viewport'), vp = $vp[0];
   const $stage = $('#stage'), photo = $('#photo')[0], overlay = $('#overlay')[0];
@@ -85,7 +88,12 @@ $(function () {
 
   /* ---------- Persistence ---------- */
 
-  function storageKey() { return 'nadir:v1:' + image.name + ':' + image.size + ':' + image.W + 'x' + image.H; }
+  // Local work is keyed by image, or by shared project id when viewing a share.
+  // For a share, the stored copy remembers which server version it was based on.
+  function storageKey() {
+    return share.id ? 'nadir:share:' + share.id
+                    : 'nadir:v1:' + image.name + ':' + image.size + ':' + image.W + 'x' + image.H;
+  }
 
   function snapshot() {
     return {
@@ -96,9 +104,22 @@ $(function () {
     };
   }
 
-  function save() {
+  function readLocal() {
+    try { return JSON.parse(localStorage.getItem(storageKey()) || 'null'); } catch (e) { return null; }
+  }
+
+  function saveLocal() {
     if (!image.loaded) return;
-    try { localStorage.setItem(storageKey(), JSON.stringify(snapshot())); } catch (e) { /* storage unavailable */ }
+    const data = share.id ? { base: share.version, data: snapshot() } : snapshot();
+    try { localStorage.setItem(storageKey(), JSON.stringify(data)); } catch (e) { /* storage unavailable */ }
+  }
+
+  function save() {
+    saveLocal();
+    if (share.id) {
+      if (share.canEdit) scheduleRemoteSave();
+      else renderShareStatus();
+    }
   }
 
   function restore(data) {
@@ -117,29 +138,37 @@ $(function () {
 
   /* ---------- Image loading ---------- */
 
-  function openImage(file) {
+  // sharedProject: the api.php 'get' response when opening a share; omitted for a local file.
+  function openImage(file, sharedProject) {
     if (!file || !/^image\//.test(file.type)) { toast('That is not an image file', 'danger'); return; }
     const url = URL.createObjectURL(file);
     const probe = new Image();
     probe.onload = () => {
       if (image.url) URL.revokeObjectURL(image.url);
-      Object.assign(image, { loaded: true, name: file.name, size: file.size,
+      Object.assign(image, { loaded: true, name: file.name, size: file.size, file,
                              W: probe.naturalWidth, H: probe.naturalHeight, url });
       photo.src = url;
       photo.width = image.W; photo.height = image.H;
       $(overlay).attr({ width: image.W, height: image.H, viewBox: `0 0 ${image.W} ${image.H}` });
       $vp.addClass('has-image');
       $('#status-file').text(`${file.name} · ${image.W}×${image.H}`);
+      $('#btn-share').prop('disabled', false);
 
       restore({});
       let restored = false;
-      try {
-        const saved = localStorage.getItem(storageKey());
-        if (saved) { restore(JSON.parse(saved)); restored = true; }
-      } catch (e) { /* ignore */ }
+      if (sharedProject) {
+        restored = applySharedProject(sharedProject);
+      } else {
+        leaveShare();
+        const saved = readLocal();
+        if (saved) { restore(saved); restored = true; }
+      }
       fitView();
       renderAll();
-      if (restored && (state.controlPoints.length || state.labels.length)) {
+      renderShareStatus();
+      if (sharedProject) {
+        if (!state.controlPoints.length) setMode('cp'); else setMode('pan');
+      } else if (restored && (state.controlPoints.length || state.labels.length)) {
         toast(`Restored ${state.controlPoints.length} control point(s) and ${state.labels.length} label(s) saved for this image`);
       } else if (!state.controlPoints.length) {
         setMode('cp');
@@ -863,9 +892,253 @@ $(function () {
     renderAll(); save();
   });
 
+  /* ---------- Sharing ---------- */
+
+  const API = 'api.php';
+  const modalShare = new bootstrap.Modal('#modal-share');
+
+  function shareUrl(id, token) {
+    const base = location.origin + location.pathname;
+    return base + '?p=' + encodeURIComponent(id) + (token ? '#edit=' + token : '');
+  }
+
+  // Edit tokens this browser holds, so the creator keeps edit rights when reopening the view link.
+  function tokens() { try { return JSON.parse(localStorage.getItem('nadir:tokens') || '{}'); } catch (e) { return {}; } }
+  function setToken(id, token) {
+    const t = tokens();
+    if (token) t[id] = token; else delete t[id];
+    try { localStorage.setItem('nadir:tokens', JSON.stringify(t)); } catch (e) { /* ignore */ }
+  }
+
+  function apiError(xhr, fallback) {
+    return (xhr.responseJSON && xhr.responseJSON.error) ||
+           (xhr.status === 413 ? 'Image is too large to upload' : xhr.status ? fallback + ' (HTTP ' + xhr.status + ')' : 'Network error');
+  }
+
+  function leaveShare() {
+    if (!share.id) return;
+    clearTimeout(share.timer);
+    Object.assign(share, { id: null, token: null, version: 0, canEdit: false, serverSnap: null,
+                           saving: false, dirty: false, error: null, timer: null });
+    history.replaceState(null, '', location.pathname);
+    renderShareStatus();
+  }
+
+  // Called while the shared image is being opened: load the server's project,
+  // or this browser's own changes to it if they are based on the current version.
+  function applySharedProject(res) {
+    Object.assign(share, { id: res.id, version: res.version, canEdit: res.canEdit,
+                           dirty: false, error: null, saving: false });
+    restore(res.project);
+    share.serverSnap = JSON.stringify(snapshot());
+    const local = readLocal();
+    if (local && local.data && JSON.stringify(local.data) !== share.serverSnap) {
+      if (local.base === res.version) {
+        restore(local.data);
+        if (share.canEdit) { toast('Uploading changes that were not saved last time'); scheduleRemoteSave(); }
+        else toast('Showing your own changes to this shared project. Use "revert" to see the shared version.');
+      } else {
+        toast('The shared project was updated since your last visit. Showing the latest version.');
+        saveLocal();
+      }
+    }
+    return true;
+  }
+
+  function loadShare(id, hashToken) {
+    const token = hashToken || tokens()[id] || null;
+    $('#empty-title').text('Loading shared project…');
+    $('#empty-sub').text('');
+    $.ajax({ url: API, data: { action: 'get', p: id }, dataType: 'json',
+             headers: token ? { 'X-Edit-Token': token } : {} })
+      .done(res => {
+        if (token && !res.canEdit) {
+          setToken(id, null);
+          toast('That edit link is not valid (any more). Opened view-only.', 'warning');
+        } else if (res.canEdit) setToken(id, token);
+        share.token = res.canEdit ? token : null;
+        $('#empty-title').text(`Downloading ${res.image.name} (${(res.image.size / 1048576).toFixed(1)} MB)…`);
+        fetch(res.image.url)
+          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+          .then(blob => openImage(new File([blob], res.image.name, { type: blob.type }), res))
+          .catch(err => loadFailed('Could not download the image: ' + err.message));
+      })
+      .fail(xhr => loadFailed(apiError(xhr, 'Could not load the shared project')));
+
+    function loadFailed(msg) {
+      $('#empty-title').text(msg);
+      $('#empty-sub').text('You can still open an image of your own.');
+      history.replaceState(null, '', location.pathname);
+    }
+  }
+
+  function scheduleRemoteSave() {
+    share.dirty = true;
+    clearTimeout(share.timer);
+    share.timer = setTimeout(remoteSave, 1000);
+    renderShareStatus();
+  }
+
+  function remoteSave(overwrite) {
+    if (!share.id || !share.canEdit) return;
+    if (share.saving) { share.timer = setTimeout(remoteSave, 500); return; }
+    if (share.error === 'conflict' && !overwrite) return;
+    const project = snapshot(), snap = JSON.stringify(project);
+    Object.assign(share, { saving: true, dirty: false, error: null });
+    renderShareStatus();
+    $.ajax({ url: API + '?action=update&p=' + share.id, method: 'POST', contentType: 'application/json',
+             headers: { 'X-Edit-Token': share.token }, dataType: 'json',
+             data: JSON.stringify({ baseVersion: share.version, project }) })
+      .done(res => {
+        share.version = res.version;
+        share.serverSnap = snap;
+        saveLocal();
+      })
+      .fail(xhr => {
+        share.dirty = true;
+        if (xhr.status === 409) {
+          share.error = 'conflict';
+          share.conflictVersion = xhr.responseJSON && xhr.responseJSON.version;
+          toast('Someone else saved changes to this project. Choose "load theirs" or "keep mine" at the top.', 'warning');
+        } else {
+          share.error = 'failed';
+          toast('Could not save to the shared project: ' + apiError(xhr, 'Save failed'), 'danger');
+        }
+      })
+      .always(() => {
+        share.saving = false;
+        renderShareStatus();
+        if (share.dirty && !share.error) scheduleRemoteSave();
+      });
+  }
+
+  function renderShareStatus() {
+    const $s = $('#share-status');
+    if (!share.id) { $s.addClass('d-none').empty(); return; }
+    let html;
+    if (share.canEdit) {
+      html = '<i class="bi bi-people"></i> Shared · editing · ';
+      if (share.error === 'conflict') {
+        html += '<span class="failed">conflict:</span> <a href="#" data-share="reload">load theirs</a> / <a href="#" data-share="overwrite">keep mine</a>';
+      } else if (share.error) {
+        html += '<span class="failed">not saved</span> <a href="#" data-share="retry">retry</a>';
+      } else if (share.saving || share.dirty) {
+        html += '<span class="saving">saving…</span>';
+      } else {
+        html += '<i class="bi bi-cloud-check"></i> saved';
+      }
+    } else {
+      html = '<i class="bi bi-eye"></i> Shared · view only';
+      if (image.loaded && JSON.stringify(snapshot()) !== share.serverSnap) {
+        html += ' · your changes are local <a href="#" data-share="revert">revert</a>';
+      }
+    }
+    $s.html(html).removeClass('d-none');
+  }
+
+  $('#share-status').on('click', '[data-share]', function (e) {
+    e.preventDefault();
+    const act = $(this).attr('data-share');
+    if (act === 'reload') {
+      try { localStorage.removeItem(storageKey()); } catch (err) { /* ignore */ }
+      location.reload();
+    } else if (act === 'overwrite') {
+      share.version = share.conflictVersion || share.version;
+      share.error = null;
+      remoteSave(true);
+    } else if (act === 'retry') {
+      share.error = null;
+      remoteSave();
+    } else if (act === 'revert') {
+      restore(JSON.parse(share.serverSnap));
+      try { localStorage.removeItem(storageKey()); } catch (err) { /* ignore */ }
+      renderAll();
+      renderShareStatus();
+    }
+  });
+
+  function showShareForm(show) {
+    $('#form-share').toggle(show);
+    $('#share-links').toggle(!show);
+    $('#share-error').text('').hide();
+    $('#share-password').removeClass('is-invalid');
+    $('#share-progress').addClass('d-none');
+    $('#share-submit').prop('disabled', false);
+  }
+
+  $('#btn-share').on('click', () => {
+    if (!image.loaded) return;
+    $('#share-img-name').text(image.name);
+    $('#share-img-size').text((image.size / 1048576).toFixed(1) + ' MB');
+    $('#share-host').text(location.host || 'the server');
+    if (share.id) {
+      $('#share-view-url').val(shareUrl(share.id));
+      $('#share-edit-wrap').toggle(share.canEdit);
+      if (share.canEdit) $('#share-edit-url').val(shareUrl(share.id, share.token));
+      showShareForm(false);
+    } else {
+      showShareForm(true);
+    }
+    modalShare.show();
+  });
+
+  $('#modal-share').on('shown.bs.modal', () => { if ($('#form-share').is(':visible')) $('#share-password').trigger('focus'); });
+  $('#share-new-toggle').on('click', () => { showShareForm(true); $('#share-password').trigger('focus'); });
+  $('#modal-share').on('click', '[data-copy-from]', function () { copy($($(this).attr('data-copy-from')).val()); });
+
+  $('#form-share').on('submit', e => {
+    e.preventDefault();
+    const fd = new FormData();
+    fd.append('password', $('#share-password').val());
+    fd.append('project', JSON.stringify(snapshot()));
+    fd.append('image', image.file, image.name);
+    const $bar = $('#share-progress').removeClass('d-none').find('.progress-bar').css('width', '0%');
+    $('#share-submit').prop('disabled', true);
+    $('#share-error').hide();
+    $('#share-password').removeClass('is-invalid');
+
+    $.ajax({
+      url: API + '?action=create', method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
+      xhr: () => {
+        const x = new XMLHttpRequest();
+        x.upload.addEventListener('progress', ev => {
+          if (ev.lengthComputable) $bar.css('width', (ev.loaded / ev.total * 100).toFixed(0) + '%');
+        });
+        return x;
+      },
+    }).done(res => {
+      const local = snapshot();
+      clearTimeout(share.timer);
+      Object.assign(share, { id: res.id, token: res.editToken, version: res.version, canEdit: true,
+                             serverSnap: JSON.stringify(local), saving: false, dirty: false, error: null });
+      setToken(res.id, res.editToken);
+      history.replaceState(null, '', '?p=' + res.id);
+      saveLocal();
+      renderShareStatus();
+      $('#share-view-url').val(shareUrl(res.id));
+      $('#share-edit-url').val(shareUrl(res.id, res.editToken));
+      $('#share-edit-wrap').show();
+      showShareForm(false);
+      $('#share-view-url').trigger('focus').trigger('select');
+      toast('Shared! Copy the links below.', 'success');
+    }).fail(xhr => {
+      $('#share-password').toggleClass('is-invalid', xhr.status === 403);
+      $('#share-error').text(apiError(xhr, 'Upload failed')).show();
+      $('#share-progress').addClass('d-none');
+      $('#share-submit').prop('disabled', false);
+    });
+  });
+
   /* ---------- Init ---------- */
 
   renderMethodSelect();
   renderAll();
   setMode('pan');
+
+  const sharedId = new URLSearchParams(location.search).get('p');
+  if (sharedId) {
+    const m = location.hash.match(/edit=([0-9a-f]+)/);
+    if (m) history.replaceState(null, '', '?p=' + encodeURIComponent(sharedId));   // keep the secret out of the address bar
+    loadShare(sharedId, m && m[1]);
+  }
 });

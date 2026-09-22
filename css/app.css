@@ -71,3 +71,8 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
   #main { flex-direction: column; }
   #sidebar { width: auto; height: 40vh; border-left: 0 !important; border-top: 1px solid var(--bs-border-color); }
 }
+
+#share-status { color: #ced4da; white-space: nowrap; }
+#share-status a { color: #6edff6; }
+#share-status .saving { color: #ffda6a; }
+#share-status .failed { color: #ff8a8a; }

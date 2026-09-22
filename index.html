@@ -36,6 +36,8 @@
     <button class="btn btn-outline-secondary" id="zoom-in" title="Zoom in (+)"><i class="bi bi-zoom-in"></i></button>
   </div>
 
+  <span id="share-status" class="small me-2 d-none"></span>
+  <button class="btn btn-sm btn-info me-2" id="btn-share" title="Share this project with others" disabled><i class="bi bi-share"></i> <span class="d-none d-md-inline">Share</span></button>
   <div class="dropdown">
     <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-box-seam"></i> <span class="d-none d-md-inline">Project</span></button>
     <ul class="dropdown-menu dropdown-menu-end">
@@ -54,8 +56,8 @@
   <div id="viewport" class="mode-pan">
     <div id="empty" class="text-center">
       <i class="bi bi-image display-3 d-block mb-3 opacity-50"></i>
-      <p class="lead mb-1">Open or drop a nadir image to begin</p>
-      <p class="small text-secondary">Everything stays in your browser. Nothing is uploaded.</p>
+      <p class="lead mb-1" id="empty-title">Open or drop a nadir image to begin</p>
+      <p class="small text-secondary" id="empty-sub">Everything stays in your browser until you choose to share it.</p>
     </div>
     <div id="stage">
       <img id="photo" alt="" draggable="false">
@@ -204,7 +206,53 @@
         <p class="small text-secondary mb-2">Accuracy depends mostly on your control points. A nadir image is only truly to scale on flat ground, and rooftops and treetops shift slightly outwards from the image centre.</p>
         <h6>Shortcuts</h6>
         <p class="small mb-0"><kbd>P</kbd>/<kbd>Esc</kbd> pan · <kbd>C</kbd> control point · <kbd>Q</kbd> query · <kbd>L</kbd> label · <kbd>+</kbd>/<kbd>−</kbd> zoom · <kbd>0</kbd> fit · scroll wheel zooms · drag to pan in any mode.</p>
+        <h6 class="mt-3">Sharing</h6>
+        <p class="small mb-2"><i class="bi bi-share"></i> <b>Share</b> uploads the image together with its control points, queries and labels, and gives you two links. This needs the upload password.</p>
+        <ul class="small">
+          <li><b>View link:</b> recipients can explore, query and add their own labels. Their changes stay in their own browser, and they can revert to the shared version at any time.</li>
+          <li><b>Edit link:</b> changes are saved back automatically for everyone. Keep this link to yourself and trusted collaborators.</li>
+        </ul>
         <p class="small mb-0 mt-2">Your work is autosaved in this browser for each image, and <i>Project → Save</i> exports it as a file.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Share modal -->
+<div class="modal fade" id="modal-share" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-share text-info"></i> Share project</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="share-links">
+          <label class="form-label" for="share-view-url">View link</label>
+          <div class="input-group">
+            <input type="text" class="form-control font-monospace small" id="share-view-url" readonly>
+            <button class="btn btn-outline-secondary" type="button" data-copy-from="#share-view-url" title="Copy"><i class="bi bi-clipboard"></i></button>
+          </div>
+          <div class="form-text mb-3">Recipients can explore the image, query locations and add their own labels. Their changes stay in their own browser.</div>
+          <div id="share-edit-wrap">
+            <label class="form-label" for="share-edit-url">Edit link <span class="badge text-bg-warning">keep private</span></label>
+            <div class="input-group">
+              <input type="text" class="form-control font-monospace small" id="share-edit-url" readonly>
+              <button class="btn btn-outline-secondary" type="button" data-copy-from="#share-edit-url" title="Copy"><i class="bi bi-clipboard"></i></button>
+            </div>
+            <div class="form-text">Anyone with this link can change the shared project for everyone.</div>
+          </div>
+          <button type="button" class="btn btn-link btn-sm px-0 mt-3" id="share-new-toggle">Upload as a new, separate project…</button>
+        </div>
+        <form id="form-share" autocomplete="on">
+          <p class="small mb-3">This uploads <b id="share-img-name"></b> (<span id="share-img-size"></span>) with the current control points, queries and labels to <span id="share-host"></span>. You'll get a view link and an edit link.</p>
+          <input type="text" name="username" value="nadir" autocomplete="username" hidden>
+          <label class="form-label" for="share-password">Upload password</label>
+          <input type="password" class="form-control" id="share-password" autocomplete="current-password" required>
+          <div class="invalid-feedback" id="share-error"></div>
+          <div class="progress mt-3 d-none" id="share-progress" role="progressbar"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div></div>
+          <button type="submit" class="btn btn-info w-100 mt-3" id="share-submit"><i class="bi bi-cloud-upload"></i> Upload &amp; create links</button>
+        </form>
       </div>
     </div>
   </div>

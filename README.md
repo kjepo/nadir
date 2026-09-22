@@ -12,4 +12,32 @@ The transform models are similarity (≥2 points, right for a true nadir shot), 
 
 Work is autosaved in the browser for each image. It can also be saved or loaded as a `.json` project file.
 
+## Sharing
+
+**Share** uploads the image and its project data (password-protected) and returns two links:
+
+- a **view link** (`?p=ID`): recipients explore and query; their own changes stay in their browser and can be reverted;
+- an **edit link** (`?p=ID#edit=TOKEN`): changes autosave to the server for everyone, with conflict detection.
+
+The server side is `api.php` (PHP 8.3+). Data is stored outside the web root in `/var/lib/nadir` (override with the `NADIR_DATA` environment variable):
+
+```
+/var/lib/nadir/config.php          <?php return ['password_hash' => '...'];
+/var/lib/nadir/projects/<id>/      meta.json, project.json, image.jpg, history/
+```
+
+Set or change the upload password on the server:
+
+```
+PW='new password' php -r 'echo "<?php return ".var_export(["password_hash" => password_hash(getenv("PW"), PASSWORD_DEFAULT)], true).";\n";' > /var/lib/nadir/config.php
+```
+
+`.user.ini` raises PHP's upload limit to 60 MB for this directory (PHP-FPM).
+
+## Deploy
+
+```
+rsync -rt index.html api.php .user.ini css js hetzner3:/var/www/monsym/nadir/
+```
+
 Built with jQuery and Bootstrap. The coordinate maths is in `js/georef.js`.
