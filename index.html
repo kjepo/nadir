@@ -39,6 +39,24 @@
 
   <button class="btn btn-sm btn-outline-info me-2" id="btn-locate" title="Show my current position (needs calibration and location access)" disabled><i class="bi bi-crosshair"></i> <span class="d-none d-xl-inline">Locate me</span></button>
 
+  <div class="btn-group btn-group-sm me-2" id="osm-group">
+    <button class="btn btn-outline-success" id="btn-osm" title="Show OpenStreetMap roads, buildings and water over the photo" disabled>
+      <i class="bi bi-map osm-icon"></i><span class="spinner-border spinner-border-sm d-none"></span> <span class="d-none d-xl-inline">Map</span>
+    </button>
+    <button class="btn btn-outline-success dropdown-toggle dropdown-toggle-split" id="btn-osm-menu" data-bs-toggle="dropdown" data-bs-auto-close="outside" title="Map layer options" disabled></button>
+    <div class="dropdown-menu p-3 small" style="min-width: 260px">
+      <div class="fw-semibold mb-2">OpenStreetMap overlay</div>
+      <div class="form-check"><input class="form-check-input osm-pref" type="checkbox" id="osm-roads" data-pref="roads"><label class="form-check-label" for="osm-roads"><span class="osm-key" style="background:#ffb347"></span> Roads &amp; paths</label></div>
+      <div class="form-check"><input class="form-check-input osm-pref" type="checkbox" id="osm-buildings" data-pref="buildings"><label class="form-check-label" for="osm-buildings"><span class="osm-key" style="background:#ff4dc4"></span> Buildings</label></div>
+      <div class="form-check"><input class="form-check-input osm-pref" type="checkbox" id="osm-water" data-pref="water"><label class="form-check-label" for="osm-water"><span class="osm-key" style="background:#3fa9ff"></span> Water</label></div>
+      <label class="form-label mt-2 mb-0" for="osm-opacity">Opacity</label>
+      <input type="range" class="form-range osm-pref" id="osm-opacity" data-pref="opacity" min="0.2" max="1" step="0.05">
+      <div class="form-check"><input class="form-check-input osm-pref" type="checkbox" id="osm-export" data-pref="export"><label class="form-check-label" for="osm-export">Include in exported JPEG</label></div>
+      <div class="text-secondary mt-2" id="osm-status"></div>
+      <div class="text-secondary mt-2">If the roads don't line up with the photo, a control point is probably off.</div>
+    </div>
+  </div>
+
   <div class="btn-group btn-group-sm me-auto">
     <button class="btn btn-outline-secondary" id="zoom-out" title="Zoom out (−)"><i class="bi bi-zoom-out"></i></button>
     <button class="btn btn-outline-secondary" id="zoom-fit" title="Fit image (0)"><span id="zoom-level">–</span></button>
@@ -72,6 +90,8 @@
     <div id="stage">
       <img id="photo" alt="" draggable="false">
       <svg id="overlay" xmlns="http://www.w3.org/2000/svg">
+        <defs><clipPath id="clip-image"><rect id="clip-image-rect" x="0" y="0" width="0" height="0"></rect></clipPath></defs>
+        <g id="layer-osm" clip-path="url(#clip-image)" pointer-events="none"></g>
         <g id="layer-areas"></g>
         <g id="layer-measures"></g>
         <g id="layer-labels"></g>
@@ -80,6 +100,7 @@
     </div>
     <div id="bubble" class="card shadow d-none"></div>
     <div id="mode-hint" class="small"></div>
+    <div id="osm-attrib" class="d-none">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div>
     <button type="button" id="locate-chip" class="btn btn-sm btn-light shadow-sm d-none" title="Centre on my position"></button>
   </div>
 
@@ -246,6 +267,7 @@
           <li class="mb-2"><b><i class="bi bi-tag text-success"></i> Labels:</b> click a location, then enter a name and pick a colour. Drag the label body to move it. The pointer stays attached to the location, and you can drag the dot at its tip to move the location itself.</li>
           <li class="mb-2"><b><i class="bi bi-rulers text-primary"></i> Measure:</b> after calibration, click points along a route. The hint shows the running total and the current segment. To finish, double-click or press <kbd>Enter</kbd>. Each measurement is kept with a length label, and clicking it shows each segment and its compass bearing. In Measure mode you can drag the points to adjust a measurement.</li>
           <li class="mb-2"><b><i class="bi bi-crosshair text-info"></i> Locate me:</b> on a phone or laptop with location, shows your live position as a blue dot. The circle around it shows how accurate the position is. If you are outside the photo, the chip at the top right says how far away you are and in which direction.</li>
+          <li class="mb-2"><b><i class="bi bi-map text-success"></i> Map:</b> after calibration, shows OpenStreetMap roads, paths, buildings and water over the photo. It's also a quick way to check the calibration. Use the arrow next to the button to choose layers, adjust opacity, or include the map in the exported JPEG. The first load for a new place can take up to a minute; after that it is cached.</li>
           <li class="mb-2"><b><i class="bi bi-pentagon text-danger"></i> Areas:</b> click to place corners. To finish, click the first corner, double-click, or press <kbd>Enter</kbd>. <kbd>Backspace</kbd> removes the last corner and <kbd>Esc</kbd> cancels. Then name the area and pick a colour. Once the image is calibrated, click the area or its label to see its size in m² and ha, and its perimeter. In Area mode you can drag corners to reshape an area, drag the small midpoint handles to add a corner, and Alt-click a corner to delete it.</li>
         </ol>
         <h6>Transform models</h6>

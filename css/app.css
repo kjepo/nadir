@@ -91,8 +91,17 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
 #viewport.mode-measure { cursor: crosshair; }
 .swatch-line { flex: none; display: inline-block; width: .95rem; height: .3rem; border-radius: 2px; }
 
-#locate-chip { position: absolute; right: 10px; bottom: 10px; z-index: 4; border-radius: 999px; font-size: .8rem; }
+#locate-chip { position: absolute; right: 10px; bottom: 26px; z-index: 4; border-radius: 999px; font-size: .8rem; }
 #btn-locate.active { background: #0dcaf0; color: #000; }
 
 /* Let the toolbar wrap onto two rows on narrow screens. */
 .navbar { flex-wrap: wrap; row-gap: .35rem; }
+
+/* OpenStreetMap overlay */
+#btn-osm.active { background: #198754; color: #fff; }
+.osm-key { display: inline-block; width: .8rem; height: .3rem; border-radius: 2px; vertical-align: middle; margin-right: .2rem; }
+#osm-attrib {
+  position: absolute; right: 0; bottom: 0; z-index: 4; font-size: .7rem; padding: 1px 6px;
+  background: rgba(255,255,255,.8); color: #333; border-top-left-radius: 4px;
+}
+#osm-attrib a { color: #333; }

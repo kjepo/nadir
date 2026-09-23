@@ -38,6 +38,7 @@ $(function () {
 
   const $vp = $('#viewport'), vp = $vp[0];
   const $stage = $('#stage'), photo = $('#photo')[0], overlay = $('#overlay')[0];
+  const layerOsm = $('#layer-osm')[0];
   const layerAreas = $('#layer-areas')[0], layerMeasures = $('#layer-measures')[0], layerLabels = $('#layer-labels')[0], layerMarkers = $('#layer-markers')[0];
   const measureCtx = document.createElement('canvas').getContext('2d');
   const modalCp = new bootstrap.Modal('#modal-cp');
@@ -163,11 +164,13 @@ $(function () {
     probe.onload = () => {
       if (image.url) URL.revokeObjectURL(image.url);
       stopLocate();
+      resetOsm();
       Object.assign(image, { loaded: true, name: file.name, size: file.size, file,
                              W: probe.naturalWidth, H: probe.naturalHeight, url });
       photo.src = url;
       photo.width = image.W; photo.height = image.H;
       $(overlay).attr({ width: image.W, height: image.H, viewBox: `0 0 ${image.W} ${image.H}` });
+      $('#clip-image-rect').attr({ width: image.W, height: image.H });
       $vp.addClass('has-image');
       $('#status-file').text(`${file.name} · ${image.W}×${image.H}`);
       $('#btn-share, #btn-export-top').prop('disabled', false);
@@ -255,6 +258,7 @@ $(function () {
   function applyView() {
     if (!image.loaded) return;
     $stage.css('transform', `translate(${view.tx}px, ${view.ty}px) scale(${view.s})`);
+    scaleOsm();
     $('#zoom-level').text(Math.round(view.s * 100) + '%');
     renderMarkers();
     positionBubble();
@@ -983,11 +987,13 @@ $(function () {
 
     $('#label-at-coords').prop('disabled', !geo.ok);
     $('#btn-locate').prop('disabled', !geo.ok);
+    updateOsmUi();
     updateHint();
   }
 
   function renderAll() {
     computeFit();
+    if (osm.on && osmKey() !== osm.key) renderOsm();   // calibration changed: re-project the map
     renderOverlay();
     renderSidebar();
     renderBubble();
@@ -1443,6 +1449,7 @@ $(function () {
     const ctx = c.getContext('2d');
     ctx.drawImage(photo, 0, 0);
     LABEL_FONT_READY.then(() => {
+      if (osm.on && osm.prefs.export) drawOsmCanvas(ctx);
       state.areas.forEach(a => {
         const path = new Path2D();
         a.points.forEach(([x, y], i) => i ? path.lineTo(x, y) : path.moveTo(x, y));
@@ -1794,6 +1801,160 @@ $(function () {
       $('#share-progress').addClass('d-none');
       $('#share-submit').prop('disabled', false);
     });
+  });
+
+  /* ---------- OpenStreetMap overlay ---------- */
+
+  // Widths and dashes are in screen pixels; the overlay keeps them constant while zooming.
+  const OSM_STYLE = {
+    water:    { fill: 'rgba(64, 170, 255, 0.25)', stroke: '#3fa9ff', width: 2 },
+    waterway: { stroke: '#3fa9ff', width: 2 },
+    building: { fill: 'rgba(255, 77, 196, 0.25)', stroke: '#ff4dc4', width: 1.5 },
+    path:     { stroke: '#ffe066', width: 2, dash: [6, 4], halo: true },
+    minor:    { stroke: '#ffffff', width: 3, halo: true },
+    major:    { stroke: '#ffb347', width: 4, halo: true },
+  };
+  const OSM_LAYER_OF = { water: 'water', waterway: 'water', building: 'buildings', path: 'roads', minor: 'roads', major: 'roads' };
+  const OSM_HALO = 'rgba(0, 0, 0, 0.45)';
+  const osm = { on: false, loading: false, features: null, bbox: null, key: null,
+                prefs: { roads: true, buildings: true, water: true, opacity: 0.9, export: false } };
+  try { Object.assign(osm.prefs, JSON.parse(localStorage.getItem('nadir:osm') || '{}')); } catch (e) { /* ignore */ }
+
+  function osmKey() { return geo.ok ? JSON.stringify(geo.H) : ''; }
+
+  function photoBBox() {
+    const lls = [[0, 0], [image.W, 0], [0, image.H], [image.W, image.H]].map(([x, y]) => geo.toLatLon(x, y));
+    if (lls.some(ll => !ll)) return null;
+    const lat = lls.map(ll => ll.lat), lon = lls.map(ll => ll.lon);
+    return { s: Math.min(...lat), n: Math.max(...lat), w: Math.min(...lon), e: Math.max(...lon) };
+  }
+
+  function loadOsm() {
+    const need = photoBBox();
+    if (!need) return $.Deferred().reject().promise();
+    const b = osm.bbox;
+    if (osm.features && b.s <= need.s && b.w <= need.w && b.n >= need.n && b.e >= need.e) return $.Deferred().resolve().promise();
+    osm.loading = true;
+    updateOsmUi();
+    return $.ajax({ url: API, dataType: 'json', timeout: 240000,
+                    data: { action: 'osm', s: need.s.toFixed(5), w: need.w.toFixed(5), n: need.n.toFixed(5), e: need.e.toFixed(5) } })
+      .done(res => {
+        const [s, w, n, e] = res.bbox.split(',').map(Number);
+        osm.features = res.features;
+        osm.bbox = { s, w, n, e };
+      })
+      .fail(xhr => toast(apiError(xhr, 'Could not load map data'), 'warning'))
+      .always(() => { osm.loading = false; updateOsmUi(); });
+  }
+
+  function toggleOsm() {
+    if (osm.loading) return;
+    if (osm.on) { osm.on = false; renderOsm(); updateOsmUi(); return; }
+    if (!geo.ok) { toast('Add 2 or more control points first', 'warning'); return; }
+    loadOsm().done(() => { osm.on = true; renderOsm(); updateOsmUi(); });
+  }
+
+  function resetOsm() {
+    Object.assign(osm, { on: false, features: null, bbox: null, key: null });
+    renderOsm();
+    updateOsmUi();
+  }
+
+  function osmPathData(f) {
+    let d = '';
+    for (const [lat, lon] of f.g) {
+      const p = geo.toPixel(lat, lon);
+      if (!p) return null;
+      d += (d ? 'L' : 'M') + p.x.toFixed(1) + ' ' + p.y.toFixed(1);
+    }
+    const [a, z] = [f.g[0], f.g[f.g.length - 1]];
+    return f.g.length > 2 && a[0] === z[0] && a[1] === z[1] ? d + 'Z' : d;
+  }
+
+  // Features to draw, in drawing order (water below buildings below roads).
+  function osmVisible() {
+    const order = ['water', 'waterway', 'building', 'path', 'minor', 'major'];
+    return order.map(c => ({ c, style: OSM_STYLE[c],
+                             paths: osm.prefs[OSM_LAYER_OF[c]] ? osm.features.filter(f => f.c === c).map(osmPathData).filter(Boolean) : [] }))
+                .filter(g => g.paths.length);
+  }
+
+  function renderOsm() {
+    $(layerOsm).empty();
+    osm.key = osmKey();
+    const show = osm.on && osm.features && geo.ok;
+    $('#osm-attrib').toggleClass('d-none', !show);
+    if (!show) return;
+    layerOsm.setAttribute('opacity', osm.prefs.opacity);
+    for (const { style, paths } of osmVisible()) {
+      const groups = [];
+      if (style.halo) groups.push(svg('g', { fill: 'none', stroke: OSM_HALO, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+                                             'data-w': style.width + 2 }, layerOsm));
+      groups.push(svg('g', { fill: 'none', stroke: style.stroke, 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+                             'data-w': style.width, 'data-dash': style.dash ? style.dash.join(' ') : '' }, layerOsm));
+      for (const d of paths) {
+        groups.forEach((g, i) => svg('path', { d, fill: style.fill && d.endsWith('Z') && i === groups.length - 1 ? style.fill : 'none' }, g));
+      }
+    }
+    scaleOsm();
+  }
+
+  function scaleOsm() {
+    $(layerOsm).children('g').each(function () {
+      this.setAttribute('stroke-width', this.getAttribute('data-w') / view.s);
+      const dash = this.getAttribute('data-dash');
+      if (dash) this.setAttribute('stroke-dasharray', dash.split(' ').map(v => v / view.s).join(' '));
+    });
+  }
+
+  function drawOsmCanvas(ctx) {
+    if (!osm.features || !geo.ok) return;
+    const k = baseFont() / 20;   // screen pixel -> export pixel
+    ctx.save();
+    ctx.globalAlpha = osm.prefs.opacity;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for (const { style, paths } of osmVisible()) {
+      const p2 = paths.map(d => [d, new Path2D(d)]);
+      if (style.halo) {
+        ctx.setLineDash([]); ctx.strokeStyle = OSM_HALO; ctx.lineWidth = (style.width + 2) * k;
+        p2.forEach(([, p]) => ctx.stroke(p));
+      }
+      ctx.setLineDash(style.dash ? style.dash.map(v => v * k) : []);
+      ctx.strokeStyle = style.stroke; ctx.lineWidth = style.width * k;
+      p2.forEach(([d, p]) => {
+        if (style.fill && d.endsWith('Z')) { ctx.fillStyle = style.fill; ctx.fill(p); }
+        ctx.stroke(p);
+      });
+    }
+    ctx.restore();
+    // Attribution required by the OpenStreetMap licence.
+    const fs = Math.round(baseFont() * 0.4), text = 'Map data © OpenStreetMap contributors';
+    ctx.save();
+    ctx.font = `600 ${fs}px ${FONT_FAMILY}`;
+    const w = ctx.measureText(text).width + fs, h = fs * 1.6;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; ctx.fillRect(image.W - w, image.H - h, w, h);
+    ctx.fillStyle = '#333'; ctx.textBaseline = 'middle'; ctx.fillText(text, image.W - w + fs / 2, image.H - h / 2);
+    ctx.restore();
+  }
+
+  function updateOsmUi() {
+    $('#btn-osm').toggleClass('active', osm.on).prop('disabled', !geo.ok && !osm.on);
+    $('#btn-osm-menu').prop('disabled', !geo.ok);
+    $('#btn-osm .osm-icon').toggleClass('d-none', osm.loading);
+    $('#btn-osm .spinner-border').toggleClass('d-none', !osm.loading);
+    $('#osm-status').text(osm.loading ? 'Loading map data… The first load for a new place can take up to a minute.'
+                          : osm.features ? `${osm.features.length} map features loaded.` : '');
+    $('.osm-pref').each(function () {
+      const v = osm.prefs[$(this).attr('data-pref')];
+      if (this.type === 'checkbox') this.checked = !!v; else this.value = v;
+    });
+  }
+
+  $('#btn-osm').on('click', toggleOsm);
+  $('.osm-pref').on('input change', function () {
+    osm.prefs[$(this).attr('data-pref')] = this.type === 'checkbox' ? this.checked : +this.value;
+    try { localStorage.setItem('nadir:osm', JSON.stringify(osm.prefs)); } catch (e) { /* ignore */ }
+    renderOsm();
   });
 
   /* ---------- Init ---------- */

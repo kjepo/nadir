@@ -9,6 +9,7 @@ Open `index.html` in a browser. No build step or server is needed, and images ne
 - **Labels:** name a location with a coloured pill, ellipse or box that points to it. Drag labels to place them, then export the labelled image as a JPEG.
 - **Areas:** draw a polygon, then name and colour it. Once the image is calibrated, its size in m²/ha and its perimeter are shown. Click an area to see its size. Corners can be dragged, added and deleted.
 - **Measure:** click along a route to get its length and each segment's length and compass bearing. Measurements are kept with a length label and can be reshaped.
+- **Map overlay:** a toggle that draws OpenStreetMap roads, paths, buildings and water over the calibrated photo. It's also a quick calibration check. The data is fetched through `api.php?action=osm` from Overpass, trimmed to the photo's surroundings, and cached for 30 days in `/var/lib/nadir/osm`.
 - **Locate me:** shows your live GPS position on the photo, with an accuracy circle. This needs HTTPS and a calibrated image. Works well on a phone with the shared view link, where pinch zoom is supported.
 
 The transform models are similarity (≥2 points, right for a true nadir shot), affine (≥3) and projective (≥4, corrects a slightly tilted camera).
