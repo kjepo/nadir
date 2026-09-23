@@ -317,12 +317,25 @@
     return { area: Math.abs(twice) / 2, perimeter };
   }
 
-  function compass(deg) {
-    const names = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-    return names[Math.round(deg / 45) % 8];
+  // Length (m) of a path [{lat, lon}, ...], with each segment's length and bearing (degrees from north).
+  function pathMetrics(latlons) {
+    if (latlons.length < 2) return { length: 0, segments: [] };
+    const frame = makeFrame(latlons);
+    const pts = latlons.map(p => frame.toLocal(p.lat, p.lon));
+    const segments = pts.slice(1).map(([x1, y1], i) => {
+      const [x0, y0] = pts[i];
+      return { length: Math.hypot(x1 - x0, y1 - y0),
+               bearing: (Math.atan2(x1 - x0, y1 - y0) * 180 / Math.PI + 360) % 360 };
+    });
+    return { length: segments.reduce((t, g) => t + g.length, 0), segments };
   }
 
-  const api = { METHODS, parseLatLon, formatDecimal, formatDMS, fit, compass, polygonMetrics };
+  function compass(deg) {
+    const names = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    return names[Math.round(deg / 22.5) % 16];
+  }
+
+  const api = { METHODS, parseLatLon, formatDecimal, formatDMS, fit, compass, polygonMetrics, pathMetrics };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Georef = api;
 })(this);

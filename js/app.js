@@ -17,18 +17,19 @@ $(function () {
     queries: [],         // {id, n, x, y}
     labels: [],          // {id, name, color, shape, scale, x, y, lx, ly}
     areas: [],           // {id, name, color, shape, scale, opacity, showSize, points: [[x, y], ...], ox, oy}
+    measures: [],        // {id, name, color, shape, scale, points: [[x, y], ...], ox, oy}
     method: 'similarity',
   };
   const image = { loaded: false, name: '', size: 0, W: 0, H: 0, url: null };
   const view = { s: 1, tx: 0, ty: 0 };
   const labelDefaults = { color: COLORS[0], shape: 'pill', scale: 1, opacity: 0.25, showSize: false };
+  const measureDefaults = { color: '#ffd60a', shape: 'rounded', scale: 0.8 };
   let mode = 'pan';
   let geo = { ok: false };
   let nextId = 1;
   let queryCounter = 0;
-  let bubbleQueryId = null;
-  let bubbleAreaId = null;  // the info bubble shows either a query or an area
-  let drawing = null;       // corners of the area being drawn, [[x, y], ...]
+  let bubble = null;        // what the info bubble shows: {type: 'query' | 'area' | 'measure', id}
+  let drawing = null;       // points of the area or measurement being drawn, [[x, y], ...]
   let draftCursor = null;   // cursor position while drawing (rubber band)
   let draftGroup = null;
   // Shared project on the server. serverSnap is the JSON of the last version known to be saved there.
@@ -37,7 +38,7 @@ $(function () {
 
   const $vp = $('#viewport'), vp = $vp[0];
   const $stage = $('#stage'), photo = $('#photo')[0], overlay = $('#overlay')[0];
-  const layerAreas = $('#layer-areas')[0], layerLabels = $('#layer-labels')[0], layerMarkers = $('#layer-markers')[0];
+  const layerAreas = $('#layer-areas')[0], layerMeasures = $('#layer-measures')[0], layerLabels = $('#layer-labels')[0], layerMarkers = $('#layer-markers')[0];
   const measureCtx = document.createElement('canvas').getContext('2d');
   const modalCp = new bootstrap.Modal('#modal-cp');
   const modalLabel = new bootstrap.Modal('#modal-label');
@@ -52,6 +53,10 @@ $(function () {
     return el;
   }
   function byId(list, id) { return list.find(o => o.id === id); }
+  function listOf(type) {
+    return { cp: state.controlPoints, query: state.queries, label: state.labels,
+             area: state.areas, measure: state.measures }[type];
+  }
   function inImage(x, y) { return x >= 0 && y >= 0 && x <= image.W && y <= image.H; }
   function mapsUrl(ll) { return 'https://www.google.com/maps?q=' + ll.lat.toFixed(7) + ',' + ll.lon.toFixed(7); }
   function fmtDist(m) { return m < 1 ? (m * 100).toFixed(0) + ' cm' : m < 1000 ? m.toFixed(m < 10 ? 2 : 1) + ' m' : (m / 1000).toFixed(2) + ' km'; }
@@ -107,7 +112,8 @@ $(function () {
       app: 'nadir-georeferencer', version: 1,
       image: { name: image.name, width: image.W, height: image.H },
       method: state.method, controlPoints: state.controlPoints,
-      queries: state.queries, labels: state.labels, areas: state.areas, labelDefaults,
+      queries: state.queries, labels: state.labels, areas: state.areas, measures: state.measures,
+      labelDefaults, measureDefaults,
     };
   }
 
@@ -135,15 +141,16 @@ $(function () {
     state.queries = arr(data.queries).filter(q => isFinite(q.x));
     state.labels = arr(data.labels).filter(l => isFinite(l.x) && isFinite(l.lx));
     state.areas = arr(data.areas).filter(a => Array.isArray(a.points) && a.points.length >= 3);
+    state.measures = arr(data.measures).filter(m => Array.isArray(m.points) && m.points.length >= 2);
+    if (data.measureDefaults) Object.assign(measureDefaults, data.measureDefaults);
     drawing = null;
     state.method = G.METHODS[data.method] ? data.method : 'similarity';
     if (data.labelDefaults) Object.assign(labelDefaults, data.labelDefaults);
-    const all = [...state.controlPoints, ...state.queries, ...state.labels, ...state.areas];
+    const all = [...state.controlPoints, ...state.queries, ...state.labels, ...state.areas, ...state.measures];
     nextId = all.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
     all.forEach(o => { if (!o.id) o.id = nextId++; });
     queryCounter = state.queries.reduce((m, q) => Math.max(m, q.n || 0), 0);
-    bubbleQueryId = null;
-    bubbleAreaId = null;
+    bubble = null;
   }
 
   /* ---------- Image loading ---------- */
@@ -155,6 +162,7 @@ $(function () {
     const probe = new Image();
     probe.onload = () => {
       if (image.url) URL.revokeObjectURL(image.url);
+      stopLocate();
       Object.assign(image, { loaded: true, name: file.name, size: file.size, file,
                              W: probe.naturalWidth, H: probe.naturalHeight, url });
       photo.src = url;
@@ -274,34 +282,64 @@ $(function () {
   /* ---------- Pointer interaction ---------- */
 
   let ptr = null;
+  const touches = new Map();   // active pointers, for two-finger pinch zoom
+  let pinch = null;
+
+  function pinchState() {
+    const [a, b] = [...touches.values()], r = vp.getBoundingClientRect();
+    return { mx: (a[0] + b[0]) / 2 - r.left, my: (a[1] + b[1]) / 2 - r.top, d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1 };
+  }
+  function startPinch() {
+    const p = pinchState();
+    // Remember which image point is under the fingers, and keep it there.
+    pinch = { d0: p.d, s0: view.s, ix: (p.mx - view.tx) / view.s, iy: (p.my - view.ty) / view.s };
+    ptr = null;
+    $vp.removeClass('panning');
+  }
+  function updatePinch() {
+    const p = pinchState();
+    view.s = Math.min(MAX_ZOOM, Math.max(fitScale() * 0.5, pinch.s0 * p.d / pinch.d0));
+    view.tx = p.mx - pinch.ix * view.s;
+    view.ty = p.my - pinch.iy * view.s;
+    applyView();
+  }
 
   vp.addEventListener('pointerdown', e => {
     if (!image.loaded || e.button !== 0 || $(e.target).closest('#bubble').length) return;
+    touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (touches.size === 2) { startPinch(); return; }
+    if (pinch) return;
     const $t = $(e.target).closest('[data-drag]');
     const start = clientToImage(e);
     ptr = { id: e.pointerId, cx: e.clientX, cy: e.clientY, moved: false, start,
             tx: view.tx, ty: view.ty };
     if ($t.length) {
       const type = $t.attr('data-drag'), id = +$t.attr('data-id');
-      if (type === 'area') {
-        ptr.click = { type, id };            // clicking an area edits it; dragging on it pans
+      if (type === 'area' || type === 'measure') {
+        ptr.click = { type, id };            // clicking shows its info; dragging on it pans
       } else {
-        ptr.drag = { type, id, index: +$t.attr('data-index') };
+        ptr.drag = { type, id, index: +$t.attr('data-index'), kind: $t.attr('data-kind') };
         const o = dragObject(ptr.drag);
         ptr.orig = !o || type === 'midpoint' ? null     // a midpoint becomes a corner once dragged
           : type === 'vertex' ? [...o.points[ptr.drag.index]]
-          : type === 'arealabel' ? { ox: o.ox || 0, oy: o.oy || 0 }
+          : type === 'arealabel' || type === 'measurelabel' ? { ox: o.ox || 0, oy: o.oy || 0 }
           : { x: o.x, y: o.y, lx: o.lx, ly: o.ly };
       }
     }
-    vp.setPointerCapture(e.pointerId);
+    try { vp.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
   });
 
   vp.addEventListener('pointermove', e => {
+    if (touches.has(e.pointerId)) touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pinch) { if (touches.size >= 2) updatePinch(); return; }
     if (image.loaded) {
       const pt = clientToImage(e);
       updateStatus(pt);
-      if (drawing) { draftCursor = [pt.x, pt.y]; renderDraft(); }
+      if (drawing) {
+        draftCursor = [pt.x, pt.y];
+        renderDraft();
+        if (mode === 'measure') updateHint();
+      }
     }
     if (!ptr || e.pointerId !== ptr.id) return;
     const dx = e.clientX - ptr.cx, dy = e.clientY - ptr.cy;
@@ -312,7 +350,7 @@ $(function () {
         const a = dragObject(ptr.drag), i = ptr.drag.index;
         const [x0, y0] = a.points[i], [x1, y1] = a.points[(i + 1) % a.points.length];
         a.points.splice(i + 1, 0, [(x0 + x1) / 2, (y0 + y1) / 2]);
-        ptr.drag = { type: 'vertex', id: a.id, index: i + 1 };
+        ptr.drag = { type: 'vertex', id: a.id, index: i + 1, kind: ptr.drag.kind };
         ptr.orig = [...a.points[i + 1]];
       }
     }
@@ -322,7 +360,7 @@ $(function () {
       const ix = dx / view.s, iy = dy / view.s;
       const type = ptr.drag.type;
       if (type === 'label') { o.lx = ptr.orig.lx + ix; o.ly = ptr.orig.ly + iy; }
-      else if (type === 'arealabel') { o.ox = ptr.orig.ox + ix; o.oy = ptr.orig.oy + iy; }
+      else if (type === 'arealabel' || type === 'measurelabel') { o.ox = ptr.orig.ox + ix; o.oy = ptr.orig.oy + iy; }
       else if (type === 'vertex') o.points[ptr.drag.index] = [ptr.orig[0] + ix, ptr.orig[1] + iy];
       else { o.x = ptr.orig.x + ix; o.y = ptr.orig.y + iy; }
       if (type === 'cp') computeFit();
@@ -335,6 +373,8 @@ $(function () {
   });
 
   function endPointer(e, cancelled) {
+    touches.delete(e.pointerId);
+    if (pinch) { if (touches.size < 2) pinch = null; return; }   // a pinch never ends in a click
     if (!ptr || e.pointerId !== ptr.id) return;
     const p = ptr; ptr = null;
     $vp.removeClass('panning');
@@ -356,7 +396,9 @@ $(function () {
 
   function dragObject(d) {
     if (d.type === 'cp') return byId(state.controlPoints, d.id);
-    if (['area', 'arealabel', 'vertex', 'midpoint'].includes(d.type)) return byId(state.areas, d.id);
+    if (d.type === 'vertex' || d.type === 'midpoint') return byId(listOf(d.kind || 'area'), d.id);
+    if (d.type === 'area' || d.type === 'arealabel') return byId(state.areas, d.id);
+    if (d.type === 'measure' || d.type === 'measurelabel') return byId(state.measures, d.id);
     if (d.type === 'query') return byId(state.queries, d.id);
     return byId(state.labels, d.id);   // 'label' (body) or 'anchor' (tip)
   }
@@ -368,12 +410,17 @@ $(function () {
     else if (mode === 'query') addQuery(x, y, true);
     else if (mode === 'label') openLabelModal(null, x, y);
     else if (mode === 'area') addDraftPoint(x, y);
+    else if (mode === 'measure') {
+      if (geo.ok) addDraftPoint(x, y);
+      else toast('Add 2 or more control points before measuring', 'warning');
+    }
   }
 
   function objectClicked(d) {
     if (d.type === 'cp') openCpModal(d.id);
     else if (d.type === 'query') showBubble(d.id);
     else if (d.type === 'area' || d.type === 'arealabel') showAreaBubble(d.id);
+    else if (d.type === 'measure' || d.type === 'measurelabel') openBubble('measure', d.id);
     else openLabelModal(d.id);
   }
 
@@ -394,10 +441,10 @@ $(function () {
   };
 
   function setMode(m) {
-    if (m !== 'area' && drawing) cancelDraft();
+    if (drawing && m !== mode) cancelDraft();
     mode = m;
     $('#mode-' + m).prop('checked', true);
-    $vp.removeClass('mode-pan mode-cp mode-query mode-label mode-area').addClass('mode-' + m);
+    $vp.removeClass('mode-pan mode-cp mode-query mode-label mode-area mode-measure').addClass('mode-' + m);
     renderMarkers();   // corner handles are shown in Area mode only
     updateHint();
   }
@@ -409,6 +456,17 @@ $(function () {
         : drawing.length < 3 ? 'Click to add corners · Backspace undoes · Esc cancels'
         : 'Click the first corner, double-click or press Enter to finish · Backspace undoes · Esc cancels';
     }
+    if (mode === 'measure') {
+      if (!geo.ok) h = 'Add 2 or more control points to measure distances.';
+      else if (!drawing) h = 'Click to start measuring. Drag the points of a measurement to adjust it.';
+      else {
+        const m = measureMetrics(draftCursor ? [...drawing, draftCursor] : drawing);
+        const seg = m && m.segments[m.segments.length - 1];
+        h = seg ? `Total ${fmtDist(m.length)} · this segment ${fmtDist(seg.length)}, ${seg.bearing.toFixed(0)}° ${G.compass(seg.bearing)}`
+                  + ' · double-click or Enter to finish'
+                : 'Click the next point';
+      }
+    }
     $('#mode-hint').text(image.loaded ? h : '');
   }
   $('input[name=mode]').on('change', function () { setMode(this.value); });
@@ -418,13 +476,14 @@ $(function () {
     const k = e.key.toLowerCase();
     if (drawing && (k === 'escape' || k === 'enter' || k === 'backspace')) {
       if (k === 'escape') cancelDraft();
-      else if (k === 'enter') finishArea();
+      else if (k === 'enter') finishDraft();
       else { drawing.pop(); if (drawing.length) { renderMarkers(); updateHint(); } else cancelDraft(); }
       e.preventDefault();
       return;
     }
     if (k === 'escape' || k === 'p') { setMode('pan'); hideBubble(); }
     else if (k === 'a') setMode('area');
+    else if (k === 'm') setMode('measure');
     else if (k === 'c') setMode('cp');
     else if (k === 'q') setMode('query');
     else if (k === 'l') setMode('label');
@@ -523,6 +582,7 @@ $(function () {
   function renderLabels() {
     $(layerLabels).empty();
     state.areas.forEach(a => drawLabelSvg(layerLabels, areaLabel(a), null, a.id, 'arealabel'));
+    state.measures.forEach(ms => drawLabelSvg(layerLabels, measureLabel(ms), null, ms.id, 'measurelabel'));
     state.labels.forEach(lb => drawLabelSvg(layerLabels, lb, null, lb.id));
   }
 
@@ -607,18 +667,113 @@ $(function () {
     });
   }
 
-  // Corner and midpoint handles for reshaping areas (Area mode, when not drawing).
-  function renderAreaHandles(k) {
-    state.areas.forEach(a => {
+  /* ---------- Measurements ---------- */
+
+  function measureMetrics(points) {
+    if (!geo.ok) return null;
+    const lls = points.map(([x, y]) => geo.toLatLon(x, y));
+    return lls.every(Boolean) ? G.pathMetrics(lls) : null;
+  }
+
+  // The point halfway along a path, where its label sits.
+  function pathMidpoint(pts) {
+    const segs = pts.slice(1).map((p, i) => Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1]));
+    let half = segs.reduce((t, l) => t + l, 0) / 2;
+    for (let i = 0; i < segs.length; i++) {
+      if (half <= segs[i] || i === segs.length - 1) {
+        const t = segs[i] ? Math.min(1, half / segs[i]) : 0;
+        return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * t, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * t];
+      }
+      half -= segs[i];
+    }
+    return pts[0];
+  }
+
+  function measureText(name, points) {
+    const m = measureMetrics(points), len = m && fmtDist(m.length);
+    return name && len ? `${name} · ${len}` : name || len || 'Measurement';
+  }
+
+  function measureLabel(ms) {
+    const [x, y] = pathMidpoint(ms.points);
+    return { name: measureText(ms.name, ms.points), color: ms.color, shape: ms.shape, scale: ms.scale,
+             x, y, lx: x + (ms.ox || 0), ly: y + (ms.oy || 0), noDot: true };
+  }
+
+  function renderMeasures() {
+    $(layerMeasures).empty();
+    const sw = areaStrokeWidth();
+    state.measures.forEach(ms => {
+      const points = ms.points.map(p => p.join(',')).join(' ');
+      const line = { points, fill: 'none', 'stroke-linejoin': 'round', 'stroke-linecap': 'round', 'pointer-events': 'none' };
+      svg('polyline', { ...line, stroke: AREA_HALO, 'stroke-width': sw * 2 }, layerMeasures);
+      svg('polyline', { ...line, stroke: ms.color, 'stroke-width': sw }, layerMeasures);
+      ms.points.forEach(([x, y]) => svg('circle', { cx: x, cy: y, r: sw * 1.4, fill: ms.color, stroke: AREA_HALO,
+                                                    'stroke-width': sw * 0.6, 'pointer-events': 'none' }, layerMeasures));
+      // A wide invisible stroke makes the thin line easy to click.
+      svg('polyline', { points, fill: 'none', stroke: 'transparent', 'stroke-width': sw * 6, 'pointer-events': 'stroke',
+                        class: 'measure-body', 'data-drag': 'measure', 'data-id': ms.id }, layerMeasures);
+    });
+  }
+
+  function drawMeasuresCanvas(ctx) {
+    const sw = areaStrokeWidth();
+    state.measures.forEach(ms => {
+      const path = new Path2D();
+      ms.points.forEach(([x, y], i) => i ? path.lineTo(x, y) : path.moveTo(x, y));
+      ctx.save();
+      ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.strokeStyle = AREA_HALO; ctx.lineWidth = sw * 2; ctx.stroke(path);
+      ctx.strokeStyle = ms.color; ctx.lineWidth = sw; ctx.stroke(path);
+      ms.points.forEach(([x, y]) => {
+        ctx.beginPath(); ctx.arc(x, y, sw * 1.4, 0, Math.PI * 2);
+        ctx.fillStyle = ms.color; ctx.fill();
+        ctx.strokeStyle = AREA_HALO; ctx.lineWidth = sw * 0.6; ctx.stroke();
+      });
+      ctx.restore();
+    });
+  }
+
+  function renderMeasureBubble(ms) {
+    const m = measureMetrics(ms.points);
+    const segs = m && m.segments;
+    let detail = '';
+    if (segs && segs.length === 1) {
+      detail = `<div class="small text-secondary">bearing ${segs[0].bearing.toFixed(0)}° ${G.compass(segs[0].bearing)}</div>`;
+    } else if (segs) {
+      detail = `<div class="small text-secondary mt-1" style="max-height: 7.5rem; overflow-y: auto">${segs.map((g, i) =>
+        `${i + 1}. ${fmtDist(g.length)} · ${g.bearing.toFixed(0)}° ${G.compass(g.bearing)}`).join('<br>')}</div>`;
+    }
+    $('#bubble').html(`<div class="card-body p-2">
+      <div class="d-flex align-items-center mb-1 gap-2">
+        <span class="swatch-line" style="background:${esc(ms.color)}"></span>
+        <b class="text-truncate">${esc(ms.name || 'Measurement')}</b>
+        <button type="button" class="btn-close btn-sm ms-auto" data-bubble="close"></button></div>
+      ${m ? `<div class="fs-5 fw-semibold">${fmtDist(m.length)}</div>${detail}`
+          : '<div class="text-secondary small">Add 2 or more control points to measure.</div>'}
+      <div class="d-flex gap-1 mt-2">
+        ${m ? '<button class="btn btn-sm btn-outline-secondary py-0" data-bubble="copy-measure"><i class="bi bi-clipboard"></i> Copy</button>' : ''}
+        <button class="btn btn-sm btn-outline-secondary py-0" data-bubble="edit-measure"><i class="bi bi-pencil"></i> Name / style</button>
+        <button class="btn btn-sm btn-outline-danger py-0 ms-auto" data-bubble="delete-measure" title="Delete"><i class="bi bi-trash"></i></button>
+      </div>
+    </div>`).removeClass('d-none');
+    positionBubble();
+  }
+
+  // Point and midpoint handles for reshaping areas (closed) or measurements (open).
+  function renderHandles(k, items, kind, closed) {
+    items.forEach(a => {
       a.points.forEach(([x0, y0], i) => {
+        if (!closed && i === a.points.length - 1) return;
         const [x1, y1] = a.points[(i + 1) % a.points.length];
         const m = svg('g', { transform: `translate(${(x0 + x1) / 2} ${(y0 + y1) / 2}) scale(${k})`,
-                             'data-drag': 'midpoint', 'data-id': a.id, 'data-index': i }, layerMarkers);
+                             'data-drag': 'midpoint', 'data-kind': kind, 'data-id': a.id, 'data-index': i }, layerMarkers);
         svg('circle', { r: 9, fill: 'transparent' }, m);
         svg('circle', { r: 4, fill: 'rgba(255,255,255,.75)', stroke: '#000', 'stroke-width': 1.25 }, m);
       });
       a.points.forEach(([x, y], i) => {
-        const v = svg('g', { transform: `translate(${x} ${y}) scale(${k})`, 'data-drag': 'vertex', 'data-id': a.id, 'data-index': i }, layerMarkers);
+        const v = svg('g', { transform: `translate(${x} ${y}) scale(${k})`, 'data-drag': 'vertex', 'data-kind': kind,
+                             'data-id': a.id, 'data-index': i }, layerMarkers);
         svg('rect', { x: -9, y: -9, width: 18, height: 18, fill: 'transparent' }, v);
         svg('rect', { x: -5.5, y: -5.5, width: 11, height: 11, fill: '#fff', stroke: '#000', 'stroke-width': 1.75 }, v);
       });
@@ -633,11 +788,11 @@ $(function () {
     const k = 1 / view.s;
     const pts = draftCursor ? [...drawing, draftCursor] : drawing;
     const str = pts.map(p => p.join(',')).join(' ');
-    if (pts.length >= 3) svg('polygon', { points: str, fill: labelDefaults.color, 'fill-opacity': 0.2 }, draftGroup);
+    if (mode === 'area' && pts.length >= 3) svg('polygon', { points: str, fill: labelDefaults.color, 'fill-opacity': 0.2 }, draftGroup);
     svg('polyline', { points: str, fill: 'none', stroke: '#000', 'stroke-opacity': 0.6, 'stroke-width': 4 * k, 'stroke-linejoin': 'round' }, draftGroup);
     svg('polyline', { points: str, fill: 'none', stroke: '#fff', 'stroke-width': 2 * k, 'stroke-dasharray': `${6 * k} ${4 * k}` }, draftGroup);
     drawing.forEach(([x, y], i) => {
-      const closing = i === 0 && drawing.length >= 3;
+      const closing = mode === 'area' && i === 0 && drawing.length >= 3;
       svg('circle', { cx: x, cy: y, r: (closing ? 7 : 4.5) * k, fill: closing ? '#ffc107' : '#fff',
                       stroke: '#000', 'stroke-width': 1.5 * k }, draftGroup);
     });
@@ -647,15 +802,25 @@ $(function () {
     drawing = drawing || [];
     const tol = 10 / view.s, near = p => Math.hypot(p[0] - x, p[1] - y) < tol;
     const last = drawing[drawing.length - 1];
-    // Clicking the first corner, or clicking the last one again (double-click), finishes.
-    if (drawing.length >= 3 && (near(drawing[0]) || near(last))) { finishArea(); return; }
+    // Clicking the last point again (double-click) finishes; for an area, so does its first corner.
+    const min = mode === 'measure' ? 2 : 3;
+    if (drawing.length >= min && (near(last) || (mode === 'area' && near(drawing[0])))) { finishDraft(); return; }
     if (last && near(last)) return;
     drawing.push([x, y]);
     renderMarkers();
     updateHint();
   }
 
-  function finishArea() {
+  function finishDraft() {
+    if (mode === 'measure') {
+      if (!drawing || drawing.length < 2) { toast('Click at least 2 points to measure'); return; }
+      const ms = { id: nextId++, name: '', ...measureDefaults, points: drawing, ox: 0, oy: 0 };
+      state.measures.push(ms);
+      drawing = null; draftCursor = null;
+      bubble = { type: 'measure', id: ms.id };
+      renderAll(); save();
+      return;
+    }
     if (!drawing || drawing.length < 3) { toast('An area needs at least 3 corners'); return; }
     const pts = drawing;
     cancelDraft();
@@ -669,8 +834,8 @@ $(function () {
   }
 
   function deleteVertex(d) {
-    const a = dragObject(d);
-    if (a.points.length <= 3) { toast('An area needs at least 3 corners'); return; }
+    const a = dragObject(d), min = d.kind === 'measure' ? 2 : 3;
+    if (a.points.length <= min) { toast(d.kind === 'measure' ? 'A measurement needs at least 2 points' : 'An area needs at least 3 corners'); return; }
     a.points.splice(d.index, 1);
     renderAll(); save();
   }
@@ -693,7 +858,7 @@ $(function () {
     });
     state.queries.forEach(q => {
       const g = svg('g', { transform: `translate(${q.x} ${q.y}) scale(${k})`, 'data-drag': 'query', 'data-id': q.id,
-                           class: 'mk' + (q.id === bubbleQueryId ? ' selected' : '') }, layerMarkers);
+                           class: 'mk' + (bubbleIs('query', q.id) ? ' selected' : '') }, layerMarkers);
       svg('circle', { r: 12, fill: 'transparent' }, g);
       svg('circle', { r: 7, fill: 'none', stroke: '#000', 'stroke-width': 4.5, opacity: 0.7 }, g);
       svg('circle', { r: 7, fill: 'none', stroke: '#0dcaf0', 'stroke-width': 2.25, class: 'mk-ring' }, g);
@@ -702,12 +867,14 @@ $(function () {
       t.textContent = 'Q' + q.n;
     });
     $vp.toggleClass('drawing', !!drawing);
-    if (mode === 'area' && !drawing) renderAreaHandles(k);
+    renderLocation(k);
+    if (mode === 'area' && !drawing) renderHandles(k, state.areas, 'area', true);
+    if (mode === 'measure' && !drawing) renderHandles(k, state.measures, 'measure', false);
     draftGroup = svg('g', { 'pointer-events': 'none' }, layerMarkers);
     renderDraft();
   }
 
-  function renderOverlay() { renderAreas(); renderLabels(); renderMarkers(); }
+  function renderOverlay() { renderAreas(); renderMeasures(); renderLabels(); renderMarkers(); }
 
   /* ---------- Rendering: sidebar ---------- */
 
@@ -762,7 +929,7 @@ $(function () {
     const $ql = $('#q-list').empty();
     state.queries.forEach(q => {
       const ll = geo.ok && geo.toLatLon(q.x, q.y);
-      $ql.append(`<li class="list-group-item d-flex align-items-center gap-2 ${q.id === bubbleQueryId ? 'active-row' : ''}">
+      $ql.append(`<li class="list-group-item d-flex align-items-center gap-2 ${bubbleIs('query', q.id) ? 'active-row' : ''}">
         <span class="badge text-bg-info">Q${q.n}</span>
         <div class="flex-grow-1 row-click coord" data-center="query:${q.id}">${ll ? G.formatDecimal(ll) : '<span class="text-secondary">not calibrated</span>'}</div>
         ${ll ? `<button class="icon-btn" data-copy="${G.formatDecimal(ll)}" title="Copy"><i class="bi bi-clipboard"></i></button>
@@ -786,6 +953,20 @@ $(function () {
     });
     if (!state.labels.length) $ll.append('<li class="list-group-item text-secondary">Use <i class="bi bi-tag"></i> Label mode and click the image.</li>');
 
+    const $ml = $('#measure-list').empty();
+    state.measures.forEach(ms => {
+      const m = measureMetrics(ms.points), n = ms.points.length - 1;
+      $ml.append(`<li class="list-group-item d-flex align-items-center gap-2">
+        <span class="swatch-line" style="background:${esc(ms.color)}"></span>
+        <div class="flex-grow-1 row-click min-w-0" data-center="measure:${ms.id}">
+          <div class="text-truncate fw-semibold">${esc(ms.name || 'Measurement')}</div>
+          <div class="text-secondary">${m ? fmtDist(m.length) + ' · ' : ''}${n} segment${n > 1 ? 's' : ''}</div>
+        </div>
+        <button class="icon-btn" data-edit="measure:${ms.id}" title="Name / style"><i class="bi bi-pencil"></i></button>
+        <button class="icon-btn" data-del="measure:${ms.id}" title="Delete"><i class="bi bi-x-lg"></i></button></li>`);
+    });
+    if (!state.measures.length) $ml.append('<li class="list-group-item text-secondary">Use <i class="bi bi-rulers"></i> Measure mode and click along a route.</li>');
+
     const $al = $('#area-list').empty();
     state.areas.forEach(a => {
       const m = areaMetrics(a.points);
@@ -801,6 +982,7 @@ $(function () {
     if (!state.areas.length) $al.append('<li class="list-group-item text-secondary">Use <i class="bi bi-pentagon"></i> Area mode and click the corners.</li>');
 
     $('#label-at-coords').prop('disabled', !geo.ok);
+    $('#btn-locate').prop('disabled', !geo.ok);
     updateHint();
   }
 
@@ -823,6 +1005,7 @@ $(function () {
       if (!o) return;
       if (type === 'label') centerOn((o.x + o.lx) / 2, (o.y + o.ly) / 2);
       else if (type === 'area') { centerOn(...areaAnchor(o.points)); showAreaBubble(o.id); }
+      else if (type === 'measure') { centerOn(...pathMidpoint(o.points)); openBubble('measure', o.id); }
       else centerOn(o.x, o.y);
       if (type === 'query') showBubble(o.id);
     })
@@ -830,6 +1013,7 @@ $(function () {
       const [type, id] = $(this).attr('data-edit').split(':');
       if (type === 'cp') openCpModal(+id);
       else if (type === 'area') openAreaModal(+id);
+      else if (type === 'measure') openMeasureModal(+id);
       else openLabelModal(+id);
     })
     .on('click', '[data-del]', function () {
@@ -843,17 +1027,17 @@ $(function () {
     });
 
   function remove(type, id) {
-    const list = { cp: state.controlPoints, query: state.queries, label: state.labels, area: state.areas }[type];
+    const list = listOf(type);
     const i = list.findIndex(o => o.id === id);
     if (i < 0) return;
     list.splice(i, 1);
-    if (type === 'query' && id === bubbleQueryId) bubbleQueryId = null;
-    if (type === 'area' && id === bubbleAreaId) bubbleAreaId = null;
+    if (bubbleIs(type, id)) bubble = null;
     renderAll(); save();
   }
 
   $('#area-draw').on('click', () => { if (image.loaded) setMode('area'); });
-  $('#q-clear').on('click', () => { state.queries = []; bubbleQueryId = null; renderAll(); save(); });
+  $('#measure-draw').on('click', () => { if (image.loaded) setMode('measure'); });
+  $('#q-clear').on('click', () => { state.queries = []; if (bubble && bubble.type === 'query') bubble = null; renderAll(); save(); });
 
   /* ---------- Queries & bubble ---------- */
 
@@ -864,18 +1048,22 @@ $(function () {
     }
     const q = { id: nextId++, n: ++queryCounter, x, y };
     state.queries.push(q);
-    bubbleQueryId = q.id;
-    bubbleAreaId = null;
+    bubble = { type: 'query', id: q.id };
     renderAll(); save();
     if (announce) positionBubble();
     return q;
   }
 
-  function showBubble(id) { bubbleQueryId = id; bubbleAreaId = null; renderMarkers(); renderSidebar(); renderBubble(); }
-  function showAreaBubble(id) { bubbleAreaId = id; bubbleQueryId = null; renderMarkers(); renderSidebar(); renderBubble(); }
+  function bubbleIs(type, id) { return !!bubble && bubble.type === type && bubble.id === id; }
+  function bubbleObject(type) {
+    return bubble && bubble.type === type ? byId(listOf(type), bubble.id) : null;
+  }
+  function openBubble(type, id) { bubble = { type, id }; renderMarkers(); renderSidebar(); renderBubble(); }
+  function showBubble(id) { openBubble('query', id); }
+  function showAreaBubble(id) { openBubble('area', id); }
   function hideBubble() {
-    if (bubbleQueryId == null && bubbleAreaId == null) return;
-    bubbleQueryId = null; bubbleAreaId = null;
+    if (!bubble) return;
+    bubble = null;
     renderMarkers(); renderSidebar(); renderBubble();
   }
 
@@ -898,9 +1086,11 @@ $(function () {
   }
 
   function renderBubble() {
-    const a = bubbleAreaId != null && byId(state.areas, bubbleAreaId);
+    const a = bubbleObject('area');
     if (a) { renderAreaBubble(a); return; }
-    const q = bubbleQueryId != null && byId(state.queries, bubbleQueryId);
+    const ms = bubbleObject('measure');
+    if (ms) { renderMeasureBubble(ms); return; }
+    const q = bubbleObject('query');
     const $b = $('#bubble');
     if (!q) { $b.addClass('d-none'); return; }
     const ll = geo.ok && geo.toLatLon(q.x, q.y);
@@ -923,10 +1113,9 @@ $(function () {
 
   function positionBubble() {
     let x, y;
-    const a = bubbleAreaId != null && byId(state.areas, bubbleAreaId);
-    const q = bubbleQueryId != null && byId(state.queries, bubbleQueryId);
-    if (a) {                       // above the area's label
-      const lb = areaLabel(a);
+    const a = bubbleObject('area'), ms = bubbleObject('measure'), q = bubbleObject('query');
+    if (a || ms) {                 // above the area's or measurement's label
+      const lb = a ? areaLabel(a) : measureLabel(ms);
       x = lb.lx; y = lb.ly - labelGeom(lb).h / 2;
     } else if (q) {
       x = q.x; y = q.y;
@@ -937,10 +1126,13 @@ $(function () {
   $('#bubble').on('pointerdown wheel', e => e.stopPropagation())
     .on('click', '[data-bubble]', function () {
       const act = $(this).attr('data-bubble');
-      const a = byId(state.areas, bubbleAreaId);
+      const a = bubbleObject('area'), ms = bubbleObject('measure');
       if (a && act === 'copy-area') { copy(Math.round(areaMetrics(a.points).area) + ' m²'); return; }
       if (a && act === 'edit-area') { openAreaModal(a.id); return; }
-      const q = byId(state.queries, bubbleQueryId);
+      if (ms && act === 'copy-measure') { copy(measureMetrics(ms.points).length.toFixed(1) + ' m'); return; }
+      if (ms && act === 'edit-measure') { openMeasureModal(ms.id); return; }
+      if (ms && act === 'delete-measure') { remove('measure', ms.id); return; }
+      const q = bubbleObject('query');
       if (act === 'close' || !q) hideBubble();
       else if (act === 'copy') copy(G.formatDecimal(geo.toLatLon(q.x, q.y)));
       else if (act === 'label') openLabelModal(null, q.x, q.y);
@@ -1066,7 +1258,23 @@ $(function () {
       : editingLabel.x == null ? 'Enter the coordinate to label.'
       : 'Edit this to move the label to another coordinate.');
     $('#label-delete').toggle(!!lb);
+    $('#label-name').prop('required', true);
     $('#label-location-block').show();
+    $('#area-options').hide();
+    renderPreview();
+    modalLabel.show();
+  }
+
+  function openMeasureModal(id) {
+    const ms = byId(state.measures, id);
+    editingLabel = { kind: 'measure', id, points: ms.points };
+    $('#label-title').text('Measurement');
+    $('#label-name').val(ms.name || '').prop('required', false);
+    renderSwatches(ms.color);
+    $('#label-shape').val(ms.shape);
+    $('#label-size').val(ms.scale);
+    $('#label-delete').show();
+    $('#label-location-block').hide();
     $('#area-options').hide();
     renderPreview();
     modalLabel.show();
@@ -1088,6 +1296,7 @@ $(function () {
     $('#area-size-text').text(m ? `Size ${fmtArea(m.area)} · perimeter ${fmtDist(m.perimeter)}`
                                 : 'Add 2 or more control points to measure the area.');
     $('#label-delete').toggle(!!a);
+    $('#label-name').prop('required', true);
     $('#label-location-block').hide();
     $('#area-options').show();
     renderPreview();
@@ -1104,6 +1313,14 @@ $(function () {
     const el = $('#label-preview')[0];
     $(el).empty();
     const fs = Math.min(30, 18 * f.scale);
+    if (editingLabel && editingLabel.kind === 'measure') {
+      const w = el.clientWidth || 400, line = [[14, 56], [w * 0.5, 22], [w - 14, 50]].map(p => p.join(',')).join(' ');
+      svg('polyline', { points: line, fill: 'none', stroke: AREA_HALO, 'stroke-width': 6, 'stroke-linejoin': 'round' }, el);
+      svg('polyline', { points: line, fill: 'none', stroke: f.color, 'stroke-width': 3, 'stroke-linejoin': 'round' }, el);
+      drawLabelSvg(el, { ...f, name: measureText(f.name, editingLabel.points), x: w / 2, y: 35, lx: w / 2, ly: 35, noDot: true }, fs);
+      $('#label-size-val').text(Math.round(baseFont() * f.scale) + ' px');
+      return;
+    }
     if (editingLabel && editingLabel.kind === 'area') {
       const w = el.clientWidth || 400, opacity = +$('#area-opacity').val();
       const poly = [[14, 10], [w * 0.45, 4], [w - 12, 16], [w - 26, 64], [w * 0.3, 66], [8, 48]];
@@ -1144,6 +1361,7 @@ $(function () {
   $('#form-label').on('submit', e => {
     e.preventDefault();
     const f = formLabel();
+    if (editingLabel.kind === 'measure') { saveMeasure(f); return; }
     if (!f.name) { $('#label-name').trigger('focus'); return; }
     if (editingLabel.kind === 'area') { saveArea(f); return; }
     const $hint = $('#label-coords-hint');
@@ -1172,6 +1390,13 @@ $(function () {
     modalLabel.hide();
     renderAll(); save();
   });
+
+  function saveMeasure(f) {
+    Object.assign(byId(state.measures, editingLabel.id), f);
+    Object.assign(measureDefaults, { color: f.color, shape: f.shape, scale: f.scale });
+    modalLabel.hide();
+    renderAll(); save();
+  }
 
   function saveArea(f) {
     const fields = { ...f, opacity: +$('#area-opacity').val(), showSize: $('#area-show-size').is(':checked') };
@@ -1229,7 +1454,9 @@ $(function () {
         ctx.strokeStyle = a.color; ctx.lineWidth = areaStrokeWidth(); ctx.stroke(path);
         ctx.restore();
       });
+      drawMeasuresCanvas(ctx);
       state.areas.forEach(a => drawLabelCanvas(ctx, areaLabel(a)));
+      state.measures.forEach(ms => drawLabelCanvas(ctx, measureLabel(ms)));
       state.labels.forEach(lb => drawLabelCanvas(ctx, lb));
       c.toBlob(b => b ? download(b, baseName() + '-labelled.jpg') : toast('Export failed', 'danger'), 'image/jpeg', 0.92);
     });
@@ -1246,8 +1473,90 @@ $(function () {
     }
     clearTimeout(clearArmed); clearArmed = null;
     $(this).html('<i class="bi bi-trash"></i> Clear everything');
-    state.controlPoints = []; state.queries = []; state.labels = []; state.areas = []; bubbleQueryId = null; bubbleAreaId = null;
+    state.controlPoints = []; state.queries = []; state.labels = []; state.areas = []; state.measures = []; bubble = null;
     renderAll(); save();
+  });
+
+  /* ---------- My location ---------- */
+
+  const locate = { watch: null, pos: null, centred: false };
+  const $chip = $('#locate-chip');
+
+  function locatePixel() {
+    return locate.pos && geo.ok ? geo.toPixel(locate.pos.lat, locate.pos.lon) : null;
+  }
+
+  function startLocate() {
+    if (!geo.ok) { toast('Add 2 or more control points first', 'warning'); return; }
+    if (!navigator.geolocation) { toast('This browser cannot provide a location', 'danger'); return; }
+    if (!window.isSecureContext) { toast('Location only works on a secure (https) page', 'danger'); return; }
+    locate.centred = false;
+    locate.watch = navigator.geolocation.watchPosition(onPosition, onPositionError,
+                                                        { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+    $('#btn-locate').addClass('active');
+    $chip.removeClass('d-none').html('<span class="spinner-border spinner-border-sm"></span> Finding your position…');
+  }
+
+  function stopLocate() {
+    if (locate.watch != null) navigator.geolocation.clearWatch(locate.watch);
+    locate.watch = null; locate.pos = null;
+    $('#btn-locate').removeClass('active');
+    $chip.addClass('d-none');
+    renderMarkers();
+  }
+
+  function onPosition(p) {
+    const c = p.coords;
+    locate.pos = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, heading: c.heading, speed: c.speed };
+    renderMarkers();
+    renderLocateChip();
+    const px = locatePixel();
+    if (!locate.centred && px) {
+      locate.centred = true;
+      if (inImage(px.x, px.y)) centerOn(px.x, px.y);
+    }
+  }
+
+  function onPositionError(err) {
+    if (err.code === 1) { toast('Location access was denied', 'warning'); stopLocate(); }
+    else if (!locate.pos) toast(err.code === 3 ? 'Still looking for your position…' : 'Your position is not available right now', 'warning');
+  }
+
+  function renderLocateChip() {
+    const px = locatePixel();
+    if (!px) return;
+    const acc = `±${Math.round(locate.pos.acc)} m`;
+    if (inImage(px.x, px.y)) {
+      $chip.html(`<i class="bi bi-crosshair text-primary"></i> You are here · ${acc}`);
+    } else {
+      const seg = G.pathMetrics([geo.toLatLon(image.W / 2, image.H / 2), locate.pos]).segments[0];
+      $chip.html(`<i class="bi bi-compass text-primary"></i> You are ${fmtDist(seg.length)} ${G.compass(seg.bearing)} of the photo · ${acc}`);
+    }
+  }
+
+  // Blue dot (constant size) inside an accuracy circle (true size), plus a direction arrow when moving.
+  function renderLocation(k) {
+    const px = locatePixel();
+    if (!px) return;
+    const pos = locate.pos;
+    if (geo.gsd) {
+      svg('circle', { cx: px.x, cy: px.y, r: pos.acc / geo.gsd, fill: 'rgba(13,110,253,0.12)',
+                      stroke: 'rgba(13,110,253,0.6)', 'stroke-width': 1.5 * k, 'pointer-events': 'none' }, layerMarkers);
+    }
+    const g = svg('g', { transform: `translate(${px.x} ${px.y}) scale(${k})`, 'pointer-events': 'none' }, layerMarkers);
+    if (pos.heading != null && !isNaN(pos.heading) && pos.speed > 0.5 && geo.bearing != null) {
+      // Compass heading relative to the direction the top of the image faces.
+      svg('path', { d: 'M0 -24 L8 -9 L-8 -9 Z', fill: '#0d6efd', stroke: '#fff', 'stroke-width': 1.5,
+                    transform: `rotate(${pos.heading - geo.bearing})` }, g);
+    }
+    svg('circle', { r: 10, fill: '#fff', stroke: 'rgba(0,0,0,.35)', 'stroke-width': 1 }, g);
+    svg('circle', { r: 7, fill: '#0d6efd' }, g);
+  }
+
+  $('#btn-locate').on('click', () => { if (locate.watch != null) stopLocate(); else startLocate(); });
+  $chip.on('click', () => {
+    const px = locatePixel();
+    if (px) centerOn(px.x, px.y);
   });
 
   /* ---------- Sharing ---------- */

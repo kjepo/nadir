@@ -84,3 +84,15 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
 .swatch-area { flex: none; display: inline-block; width: .95rem; height: .8rem; border-radius: 2px; border: 2px solid; }
 /* While drawing an area, clicks always add corners. */
 #viewport.drawing #layer-labels, #viewport.drawing #layer-markers { pointer-events: none; }
+
+/* Measurements behave like areas: clickable in Pan mode only. */
+.measure-body { cursor: pointer !important; }
+#viewport:not(.mode-pan) .measure-body { pointer-events: none; }
+#viewport.mode-measure { cursor: crosshair; }
+.swatch-line { flex: none; display: inline-block; width: .95rem; height: .3rem; border-radius: 2px; }
+
+#locate-chip { position: absolute; right: 10px; bottom: 10px; z-index: 4; border-radius: 999px; font-size: .8rem; }
+#btn-locate.active { background: #0dcaf0; color: #000; }
+
+/* Let the toolbar wrap onto two rows on narrow screens. */
+.navbar { flex-wrap: wrap; row-gap: .35rem; }
