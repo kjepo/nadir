@@ -105,3 +105,10 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
   background: rgba(255,255,255,.8); color: #333; border-top-left-radius: 4px;
 }
 #osm-attrib a { color: #333; }
+
+/* Accounts */
+#modal-auth form { display: none; }
+#modal-auth form.active { display: block; }
+.project-card .thumb { aspect-ratio: 4 / 3; object-fit: cover; background: #2a2d31; width: 100%; border-top-left-radius: inherit; border-top-right-radius: inherit; }
+.project-card .thumb-empty { aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; background: #2a2d31; color: #888; font-size: 2rem; }
+.project-card .card-title { cursor: pointer; }

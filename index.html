@@ -78,6 +78,19 @@
     </ul>
   </div>
   <button class="btn btn-sm btn-outline-light ms-2" data-bs-toggle="modal" data-bs-target="#modal-help" title="Help"><i class="bi bi-question-lg"></i></button>
+  <div id="account-area" class="ms-2">
+    <button class="btn btn-sm btn-light d-none" id="btn-login"><i class="bi bi-person"></i> <span class="d-none d-md-inline">Log in</span></button>
+    <div class="dropdown d-none" id="account-menu">
+      <button class="btn btn-sm btn-light dropdown-toggle" data-bs-toggle="dropdown" title="Your account"><i class="bi bi-person-check"></i> <span class="d-none d-md-inline" id="account-name"></span></button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li><h6 class="dropdown-header text-truncate" id="account-email" style="max-width: 240px"></h6></li>
+        <li><button class="dropdown-item" id="btn-my-projects"><i class="bi bi-folder2"></i> My projects</button></li>
+        <li><button class="dropdown-item" id="btn-account"><i class="bi bi-gear"></i> Account settings</button></li>
+        <li><hr class="dropdown-divider"></li>
+        <li><button class="dropdown-item" id="btn-logout"><i class="bi bi-box-arrow-right"></i> Log out</button></li>
+      </ul>
+    </div>
+  </div>
 </nav>
 
 <div id="main">
@@ -280,7 +293,7 @@
         <h6>Shortcuts</h6>
         <p class="small mb-0"><kbd>P</kbd>/<kbd>Esc</kbd> pan · <kbd>C</kbd> control point · <kbd>Q</kbd> query · <kbd>L</kbd> label · <kbd>A</kbd> area · <kbd>M</kbd> measure · <kbd>+</kbd>/<kbd>−</kbd> zoom · <kbd>0</kbd> fit · scroll wheel zooms · drag to pan in any mode.</p>
         <h6 class="mt-3">Sharing</h6>
-        <p class="small mb-2"><i class="bi bi-share"></i> <b>Share</b> uploads the image together with its control points, queries and labels, and gives you two links. This needs the upload password.</p>
+        <p class="small mb-2"><i class="bi bi-share"></i> <b>Share</b> saves the image with its control points, labels, areas and measurements to <b>My projects</b> in your account, and gives you two links. You need a free account for this; logging in is only needed to save and share.</p>
         <ul class="small">
           <li><b>View link:</b> recipients can explore, query and add their own labels. Their changes stay in their own browser, and they can revert to the shared version at any time.</li>
           <li><b>Edit link:</b> changes are saved back automatically for everyone. Keep this link to yourself and trusted collaborators.</li>
@@ -315,17 +328,140 @@
             </div>
             <div class="form-text">Anyone with this link can change the shared project for everyone.</div>
           </div>
-          <button type="button" class="btn btn-link btn-sm px-0 mt-3" id="share-new-toggle">Upload as a new, separate project…</button>
+          <div id="share-owner-tools" class="mt-3 small">
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="share-new-edit-link"><i class="bi bi-arrow-repeat"></i> <span>New edit link</span></button>
+            <div class="form-text">Creates a fresh edit link. The old one stops working, which is useful if it was passed on too widely.</div>
+          </div>
+          <button type="button" class="btn btn-link btn-sm px-0 mt-3" id="share-new-toggle">Save as a new, separate project…</button>
         </div>
-        <form id="form-share" autocomplete="on">
-          <p class="small mb-3">This uploads <b id="share-img-name"></b> (<span id="share-img-size"></span>) with the current control points, queries and labels to <span id="share-host"></span>. You'll get a view link and an edit link.</p>
-          <input type="text" name="username" value="nadir" autocomplete="username" hidden>
-          <label class="form-label" for="share-password">Upload password</label>
-          <input type="password" class="form-control" id="share-password" autocomplete="current-password" required>
-          <div class="invalid-feedback" id="share-error"></div>
+        <div id="share-login-needed" class="text-center py-2">
+          <i class="bi bi-person-lock display-6 text-secondary"></i>
+          <p class="mt-2 mb-3">Log in or create a free account to save this project and share it with others.</p>
+          <button type="button" class="btn btn-primary me-2" data-auth-open="login">Log in</button>
+          <button type="button" class="btn btn-outline-primary" data-auth-open="register">Create account</button>
+        </div>
+        <form id="form-share" autocomplete="off">
+          <p class="small mb-3">This saves <b id="share-img-name"></b> (<span id="share-img-size"></span>) with its control points, labels, areas and measurements to <b>My projects</b>. You'll get a view link and an edit link to share.</p>
+          <label class="form-label" for="share-title">Project name</label>
+          <input type="text" class="form-control" id="share-title" maxlength="120">
+          <div class="text-danger small mt-2" id="share-error"></div>
           <div class="progress mt-3 d-none" id="share-progress" role="progressbar"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div></div>
-          <button type="submit" class="btn btn-info w-100 mt-3" id="share-submit"><i class="bi bi-cloud-upload"></i> Upload &amp; create links</button>
+          <button type="submit" class="btn btn-info w-100 mt-3" id="share-submit"><i class="bi bi-cloud-upload"></i> Save &amp; create links</button>
         </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Log in / register / forgot password -->
+<div class="modal fade" id="modal-auth" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered" style="max-width: 420px">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="auth-title">Log in</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-danger small py-2 d-none" id="auth-error"></div>
+        <div class="alert alert-success small py-2 d-none" id="auth-info"></div>
+
+        <form id="form-login" data-view="login">
+          <label class="form-label" for="login-email">Email</label>
+          <input type="email" class="form-control mb-3" id="login-email" autocomplete="username" required>
+          <label class="form-label" for="login-password">Password</label>
+          <input type="password" class="form-control" id="login-password" autocomplete="current-password" required>
+          <div class="text-end mt-1"><a href="#" class="small" data-auth-view="forgot">Forgot your password?</a></div>
+          <button type="submit" class="btn btn-primary w-100 mt-3">Log in</button>
+          <button type="button" class="btn btn-link btn-sm w-100 mt-2 d-none" id="btn-resend">Resend the confirmation email</button>
+          <p class="small text-center mt-3 mb-0">New here? <a href="#" data-auth-view="register">Create a free account</a></p>
+        </form>
+
+        <form id="form-register" data-view="register">
+          <label class="form-label" for="register-name">Name <span class="text-secondary">(optional)</span></label>
+          <input type="text" class="form-control mb-3" id="register-name" autocomplete="name" maxlength="80">
+          <label class="form-label" for="register-email">Email</label>
+          <input type="email" class="form-control mb-3" id="register-email" autocomplete="username" required>
+          <label class="form-label" for="register-password">Password</label>
+          <input type="password" class="form-control" id="register-password" autocomplete="new-password" minlength="8" required>
+          <div class="form-text">At least 8 characters.</div>
+          <button type="submit" class="btn btn-primary w-100 mt-3">Create account</button>
+          <p class="small text-center mt-3 mb-0">Already have an account? <a href="#" data-auth-view="login">Log in</a></p>
+        </form>
+
+        <form id="form-forgot" data-view="forgot">
+          <p class="small">Enter the email address of your account and we'll send you a link to choose a new password.</p>
+          <label class="form-label" for="forgot-email">Email</label>
+          <input type="email" class="form-control" id="forgot-email" autocomplete="username" required>
+          <button type="submit" class="btn btn-primary w-100 mt-3">Send reset link</button>
+          <p class="small text-center mt-3 mb-0"><a href="#" data-auth-view="login">Back to log in</a></p>
+        </form>
+
+        <form id="form-reset" data-view="reset">
+          <p class="small">Choose a new password for your account.</p>
+          <input type="email" id="reset-username" autocomplete="username" hidden>
+          <label class="form-label" for="reset-password">New password</label>
+          <input type="password" class="form-control" id="reset-password" autocomplete="new-password" minlength="8" required>
+          <div class="form-text">At least 8 characters.</div>
+          <button type="submit" class="btn btn-primary w-100 mt-3">Save new password</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Account settings -->
+<div class="modal fade" id="modal-account" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-gear"></i> Account settings</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-secondary mb-3">Signed in as <b id="acct-email"></b></p>
+        <form id="form-name" class="mb-4">
+          <label class="form-label" for="acct-name">Name</label>
+          <div class="input-group">
+            <input type="text" class="form-control" id="acct-name" autocomplete="name" maxlength="80">
+            <button class="btn btn-outline-primary" type="submit">Save</button>
+          </div>
+        </form>
+        <form id="form-password" class="mb-4">
+          <h6>Change password</h6>
+          <input type="email" id="acct-username" autocomplete="username" hidden>
+          <input type="password" class="form-control mb-2" id="acct-current" placeholder="Current password" autocomplete="current-password" required>
+          <input type="password" class="form-control mb-2" id="acct-new" placeholder="New password (at least 8 characters)" autocomplete="new-password" minlength="8" required>
+          <button class="btn btn-outline-primary btn-sm" type="submit">Change password</button>
+          <div class="form-text">You stay logged in here and are logged out on other devices.</div>
+        </form>
+        <form id="form-delete-account" class="border border-danger-subtle rounded p-3">
+          <h6 class="text-danger">Delete account</h6>
+          <p class="small mb-2">Permanently deletes your account and all your projects, including their shared links. This can't be undone.</p>
+          <input type="password" class="form-control mb-2" id="acct-delete-password" placeholder="Your password" autocomplete="current-password" required>
+          <div class="form-check mb-2">
+            <input class="form-check-input" type="checkbox" id="acct-delete-confirm">
+            <label class="form-check-label small" for="acct-delete-confirm">I understand that my projects will be deleted</label>
+          </div>
+          <button class="btn btn-danger btn-sm" type="submit" id="acct-delete-btn" disabled>Delete my account</button>
+        </form>
+        <div class="alert small py-2 mt-3 d-none" id="acct-msg"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- My projects -->
+<div class="modal fade" id="modal-projects" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-folder2"></i> My projects</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="small text-secondary mb-1" id="quota-text"></div>
+        <div class="progress mb-3" style="height: 6px"><div class="progress-bar" id="quota-bar"></div></div>
+        <div id="project-list" class="row g-3"></div>
       </div>
     </div>
   </div>

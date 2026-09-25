@@ -33,7 +33,7 @@ $(function () {
   let draftCursor = null;   // cursor position while drawing (rubber band)
   let draftGroup = null;
   // Shared project on the server. serverSnap is the JSON of the last version known to be saved there.
-  const share = { id: null, token: null, version: 0, canEdit: false, serverSnap: null,
+  const share = { id: null, token: null, version: 0, canEdit: false, isOwner: false, serverSnap: null,
                   saving: false, dirty: false, error: null, timer: null };
 
   const $vp = $('#viewport'), vp = $vp[0];
@@ -474,6 +474,14 @@ $(function () {
     $('#mode-hint').text(image.loaded ? h : '');
   }
   $('input[name=mode]').on('change', function () { setMode(this.value); });
+
+  // Esc closes the open dialog even when focus has dropped out of it (for example after
+  // the focused button was disabled or hidden while a request ran).
+  $(document).on('keydown', e => {
+    if (e.key !== 'Escape' || document.activeElement !== document.body) return;
+    const open = $('.modal.show').last()[0];
+    if (open) bootstrap.Modal.getInstance(open).hide();
+  });
 
   $(document).on('keydown', e => {
     if ($(e.target).is('input, textarea, select') || $('.modal.show').length || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1570,6 +1578,8 @@ $(function () {
 
   const API = 'api.php';
   const modalShare = new bootstrap.Modal('#modal-share');
+  // State-changing requests must carry this header (the server rejects cross-site POSTs).
+  $.ajaxSetup({ headers: { 'X-Nadir': '1' } });
 
   function shareUrl(id, token) {
     const base = location.origin + location.pathname;
@@ -1592,7 +1602,7 @@ $(function () {
   function leaveShare() {
     if (!share.id) return;
     clearTimeout(share.timer);
-    Object.assign(share, { id: null, token: null, version: 0, canEdit: false, serverSnap: null,
+    Object.assign(share, { id: null, token: null, version: 0, canEdit: false, isOwner: false, serverSnap: null,
                            saving: false, dirty: false, error: null, timer: null });
     history.replaceState(null, '', location.pathname);
     renderShareStatus();
@@ -1601,8 +1611,8 @@ $(function () {
   // Called while the shared image is being opened: load the server's project,
   // or this browser's own changes to it if they are based on the current version.
   function applySharedProject(res) {
-    Object.assign(share, { id: res.id, version: res.version, canEdit: res.canEdit,
-                           dirty: false, error: null, saving: false });
+    Object.assign(share, { id: res.id, version: res.version, canEdit: res.canEdit, isOwner: res.isOwner,
+                           title: res.title, dirty: false, error: null, saving: false });
     restore(res.project);
     share.serverSnap = JSON.stringify(snapshot());
     const local = readLocal();
@@ -1626,11 +1636,11 @@ $(function () {
     $.ajax({ url: API, data: { action: 'get', p: id }, dataType: 'json',
              headers: token ? { 'X-Edit-Token': token } : {} })
       .done(res => {
-        if (token && !res.canEdit) {
+        if (token && !res.tokenValid) {
           setToken(id, null);
-          toast('That edit link is not valid (any more). Opened view-only.', 'warning');
-        } else if (res.canEdit) setToken(id, token);
-        share.token = res.canEdit ? token : null;
+          if (!res.canEdit) toast('That edit link is not valid (any more). Opened view-only.', 'warning');
+        } else if (token) setToken(id, token);
+        share.token = res.tokenValid ? token : null;
         $('#empty-title').text(`Downloading ${res.image.name} (${(res.image.size / 1048576).toFixed(1)} MB)…`);
         fetch(res.image.url)
           .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
@@ -1661,7 +1671,7 @@ $(function () {
     Object.assign(share, { saving: true, dirty: false, error: null });
     renderShareStatus();
     $.ajax({ url: API + '?action=update&p=' + share.id, method: 'POST', contentType: 'application/json',
-             headers: { 'X-Edit-Token': share.token }, dataType: 'json',
+             headers: share.token ? { 'X-Edit-Token': share.token } : {}, dataType: 'json',
              data: JSON.stringify({ baseVersion: share.version, project }) })
       .done(res => {
         share.version = res.version;
@@ -1731,24 +1741,33 @@ $(function () {
     }
   });
 
+  // show: the form for saving a new project (or, when logged out, the log-in prompt) instead of the links.
   function showShareForm(show) {
-    $('#form-share').toggle(show);
+    $('#form-share').toggle(show && !!me);
+    $('#share-login-needed').toggle(show && !me);
     $('#share-links').toggle(!show);
-    $('#share-error').text('').hide();
-    $('#share-password').removeClass('is-invalid');
+    $('#share-error').text('');
     $('#share-progress').addClass('d-none');
     $('#share-submit').prop('disabled', false);
+    if (show) $('#share-title').val(share.id && share.title ? share.title + ' (copy)' : image.name.replace(/\.[^.]+$/, ''));
+  }
+
+  function renderShareLinks() {
+    $('#share-view-url').val(shareUrl(share.id));
+    // The edit link needs the secret token; an owner on another device can make a new one.
+    const hasLink = share.canEdit && !!share.token;
+    $('#share-edit-wrap').toggle(hasLink || share.isOwner);
+    $('#share-edit-url').val(hasLink ? shareUrl(share.id, share.token) : '').attr('placeholder', hasLink ? '' : 'No edit link on this device. Create one below.');
+    $('#share-owner-tools').toggle(!!share.isOwner);
+    $('#share-new-edit-link span').text(hasLink ? 'New edit link' : 'Create edit link');
   }
 
   $('#btn-share').on('click', () => {
     if (!image.loaded) return;
     $('#share-img-name').text(image.name);
     $('#share-img-size').text((image.size / 1048576).toFixed(1) + ' MB');
-    $('#share-host').text(location.host || 'the server');
     if (share.id) {
-      $('#share-view-url').val(shareUrl(share.id));
-      $('#share-edit-wrap').toggle(share.canEdit);
-      if (share.canEdit) $('#share-edit-url').val(shareUrl(share.id, share.token));
+      renderShareLinks();
       showShareForm(false);
     } else {
       showShareForm(true);
@@ -1756,20 +1775,45 @@ $(function () {
     modalShare.show();
   });
 
-  $('#modal-share').on('shown.bs.modal', () => { if ($('#form-share').is(':visible')) $('#share-password').trigger('focus'); });
-  $('#share-new-toggle').on('click', () => { showShareForm(true); $('#share-password').trigger('focus'); });
+  $('#modal-share').on('shown.bs.modal', () => { if ($('#form-share').is(':visible')) $('#share-title').trigger('focus').trigger('select'); });
+  $('#share-new-toggle').on('click', () => { showShareForm(true); $('#share-title').trigger('focus'); });
+
+  $('#share-new-edit-link').on('click', function () {
+    const $b = $(this).prop('disabled', true);
+    api('new-edit-link', {}, share.id)
+      .done(res => {
+        share.token = res.editToken;
+        setToken(share.id, res.editToken);
+        renderShareLinks();
+        toast('New edit link created. The previous one no longer works.', 'success');
+      })
+      .fail(xhr => toast(apiError(xhr, 'Could not create an edit link'), 'danger'))
+      .always(() => $b.prop('disabled', false));
+  });
+
+  // A small preview for the My projects list.
+  function makeThumb() {
+    return new Promise(resolve => {
+      const k = Math.min(1, 480 / Math.max(image.W, image.H));
+      const c = document.createElement('canvas');
+      c.width = Math.round(image.W * k); c.height = Math.round(image.H * k);
+      c.getContext('2d').drawImage(photo, 0, 0, c.width, c.height);
+      c.toBlob(b => resolve(b), 'image/jpeg', 0.8);
+    });
+  }
   $('#modal-share').on('click', '[data-copy-from]', function () { copy($($(this).attr('data-copy-from')).val()); });
 
-  $('#form-share').on('submit', e => {
+  $('#form-share').on('submit', async e => {
     e.preventDefault();
     const fd = new FormData();
-    fd.append('password', $('#share-password').val());
+    fd.append('title', $('#share-title').val());
     fd.append('project', JSON.stringify(snapshot()));
     fd.append('image', image.file, image.name);
+    const thumb = await makeThumb().catch(() => null);
+    if (thumb) fd.append('thumb', thumb, 'thumb.jpg');
     const $bar = $('#share-progress').removeClass('d-none').find('.progress-bar').css('width', '0%');
     $('#share-submit').prop('disabled', true);
-    $('#share-error').hide();
-    $('#share-password').removeClass('is-invalid');
+    $('#share-error').text('');
 
     $.ajax({
       url: API + '?action=create', method: 'POST', data: fd, processData: false, contentType: false, dataType: 'json',
@@ -1783,25 +1827,283 @@ $(function () {
     }).done(res => {
       const local = snapshot();
       clearTimeout(share.timer);
-      Object.assign(share, { id: res.id, token: res.editToken, version: res.version, canEdit: true,
-                             serverSnap: JSON.stringify(local), saving: false, dirty: false, error: null });
+      Object.assign(share, { id: res.id, token: res.editToken, version: res.version, canEdit: true, isOwner: true,
+                             title: res.title, serverSnap: JSON.stringify(local), saving: false, dirty: false, error: null });
       setToken(res.id, res.editToken);
       history.replaceState(null, '', '?p=' + res.id);
       saveLocal();
       renderShareStatus();
-      $('#share-view-url').val(shareUrl(res.id));
-      $('#share-edit-url').val(shareUrl(res.id, res.editToken));
-      $('#share-edit-wrap').show();
+      renderShareLinks();
       showShareForm(false);
       $('#share-view-url').trigger('focus').trigger('select');
-      toast('Shared! Copy the links below.', 'success');
+      toast('Saved to My projects. Copy the links below to share it.', 'success');
+      loadMe();
     }).fail(xhr => {
-      $('#share-password').toggleClass('is-invalid', xhr.status === 403);
-      $('#share-error').text(apiError(xhr, 'Upload failed')).show();
+      if (xhr.status === 401) { setMe({ user: null }); showShareForm(true); }
+      $('#share-error').text(apiError(xhr, 'Upload failed'));
       $('#share-progress').addClass('d-none');
       $('#share-submit').prop('disabled', false);
     });
   });
+
+  /* ---------- Accounts ---------- */
+
+  let me = null;             // the logged-in user {id, email, name, verified}, or null
+  let quota = null;
+  let authView = 'login';
+  let resetToken = null;
+  let afterAuth = null;      // what to do after logging in (e.g. reopen the Share dialog)
+  const modalAuth = new bootstrap.Modal('#modal-auth');
+  const modalAccount = new bootstrap.Modal('#modal-account');
+  const modalProjects = new bootstrap.Modal('#modal-projects');
+
+  function api(action, body, p) {
+    return $.ajax({ url: API + '?action=' + action + (p ? '&p=' + encodeURIComponent(p) : ''), method: 'POST',
+                    contentType: 'application/json', dataType: 'json', data: JSON.stringify(body || {}) });
+  }
+
+  function setMe(res) {
+    me = res.user || null;
+    quota = res.quota || null;
+    $('#btn-login').toggleClass('d-none', !!me);
+    $('#account-menu').toggleClass('d-none', !me);
+    if (me) {
+      $('#account-name').text(me.name || me.email.split('@')[0]);
+      $('#account-email').text(me.email);
+    }
+  }
+
+  function loadMe() {
+    return $.ajax({ url: API, data: { action: 'me' }, dataType: 'json' }).done(setMe);
+  }
+
+  function showAuth(view) {
+    authView = view;
+    $('#auth-error, #auth-info').addClass('d-none');
+    $('#btn-resend').addClass('d-none');
+    $('#modal-auth form').removeClass('active');
+    $('#form-' + view).addClass('active');
+    $('#auth-title').text({ login: 'Log in', register: 'Create an account', forgot: 'Reset your password',
+                            reset: 'Choose a new password' }[view]);
+    if ($('#modal-auth').hasClass('show')) focusAuth(); else modalAuth.show();
+  }
+  function focusAuth() { $('#form-' + authView + ' input:not([hidden])').filter(function () { return !this.value; }).first().trigger('focus'); }
+  function authMessage(kind, text) {
+    $('#auth-error, #auth-info').addClass('d-none');
+    $(kind === 'error' ? '#auth-error' : '#auth-info').text(text).removeClass('d-none');
+  }
+  // Disable a form's buttons while its request runs. If focus fell out of the dialog meanwhile
+  // (a disabled or hidden button loses it), give it back so Esc and Tab keep working.
+  function busy($form, request) {
+    const $b = $form.find('button').prop('disabled', true);
+    return request.always(() => {
+      $b.prop('disabled', false);
+      if (document.activeElement === document.body) $form.closest('.modal').trigger('focus');
+    });
+  }
+
+  $('#modal-auth').on('shown.bs.modal', focusAuth)
+    .on('hidden.bs.modal', () => { afterAuth = null; });
+  $('#btn-login').on('click', () => showAuth('login'));
+  $(document).on('click', '[data-auth-view]', function (e) {
+    e.preventDefault();
+    // Carry the email address over between the forms.
+    const email = $('#modal-auth form.active input[type=email]').val();
+    const view = $(this).attr('data-auth-view');
+    if (email) $('#form-' + view + ' input[type=email]').val(email);
+    showAuth(view);
+  });
+  $(document).on('click', '[data-auth-open]', function () {
+    afterAuth = () => $('#btn-share').trigger('click');
+    modalShare.hide();
+    showAuth($(this).attr('data-auth-open'));
+  });
+
+  function loggedIn(res, message) {
+    setMe(res);
+    const next = afterAuth;
+    afterAuth = null;
+    modalAuth.hide();
+    toast(message, 'success');
+    // Reopen a project so ownership (edit rights) is picked up.
+    if (share.id && !share.canEdit) setTimeout(() => location.reload(), 600);
+    else if (next) $('#modal-auth').one('hidden.bs.modal', next);
+  }
+
+  $('#form-login').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('login', { email: $('#login-email').val(), password: $('#login-password').val() }))
+      .done(res => { $('#login-password').val(''); loggedIn(res, `Welcome${res.user.name ? ', ' + res.user.name : ''}!`); })
+      .fail(xhr => {
+        authMessage('error', apiError(xhr, 'Could not log in'));
+        $('#btn-resend').toggleClass('d-none', !(xhr.responseJSON && xhr.responseJSON.code === 'unverified'));
+      });
+  });
+  $('#btn-resend').on('click', function () {
+    busy($('#form-login'), api('resend-verification', { email: $('#login-email').val() }))
+      .done(res => { authMessage('info', res.message); $('#btn-resend').addClass('d-none'); })
+      .fail(xhr => authMessage('error', apiError(xhr, 'Could not send the email')));
+  });
+  $('#form-register').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('register', { name: $('#register-name').val(), email: $('#register-email').val(),
+                                    password: $('#register-password').val() }))
+      .done(res => {
+        $('#login-email').val($('#register-email').val());
+        $('#register-password').val('');
+        showAuth('login');
+        authMessage('info', res.message);
+      })
+      .fail(xhr => authMessage('error', apiError(xhr, 'Could not create the account')));
+  });
+  $('#form-forgot').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('forgot', { email: $('#forgot-email').val() }))
+      .done(res => authMessage('info', res.message))
+      .fail(xhr => authMessage('error', apiError(xhr, 'Could not send the email')));
+  });
+  $('#form-reset').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('reset', { token: resetToken, password: $('#reset-password').val() }))
+      .done(res => { resetToken = null; loggedIn(res, 'Your password has been changed and you are logged in.'); })
+      .fail(xhr => authMessage('error', apiError(xhr, 'Could not change the password')));
+  });
+
+  $('#btn-logout').on('click', () => {
+    api('logout').always(() => {
+      setMe({ user: null });
+      toast('You are logged out.');
+      if (share.id && share.isOwner && !share.token) setTimeout(() => location.reload(), 600);
+    });
+  });
+
+  /* Account settings */
+
+  function accountMessage(kind, text) {
+    $('#acct-msg').removeClass('d-none alert-success alert-danger').addClass(kind === 'error' ? 'alert-danger' : 'alert-success').text(text);
+  }
+  $('#btn-account').on('click', () => {
+    if (!me) return;
+    $('#acct-email').text(me.email);
+    $('#acct-username').val(me.email);
+    $('#acct-name').val(me.name);
+    $('#acct-current, #acct-new, #acct-delete-password').val('');
+    $('#acct-delete-confirm').prop('checked', false);
+    $('#acct-delete-btn').prop('disabled', true);
+    $('#acct-msg').addClass('d-none');
+    modalAccount.show();
+  });
+  $('#form-name').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('update-account', { name: $('#acct-name').val() }))
+      .done(res => { setMe(res); accountMessage('info', 'Name saved.'); })
+      .fail(xhr => accountMessage('error', apiError(xhr, 'Could not save')));
+  });
+  $('#form-password').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('change-password', { current: $('#acct-current').val(), password: $('#acct-new').val() }))
+      .done(() => { $('#acct-current, #acct-new').val(''); accountMessage('info', 'Password changed.'); })
+      .fail(xhr => accountMessage('error', apiError(xhr, 'Could not change the password')));
+  });
+  $('#acct-delete-confirm').on('change', function () { $('#acct-delete-btn').prop('disabled', !this.checked); });
+  $('#form-delete-account').on('submit', function (e) {
+    e.preventDefault();
+    busy($(this), api('delete-account', { password: $('#acct-delete-password').val() }))
+      .done(() => {
+        setMe({ user: null });
+        modalAccount.hide();
+        toast('Your account and projects have been deleted.');
+        if (share.id && share.isOwner) setTimeout(() => { location.href = location.pathname; }, 800);
+      })
+      .fail(xhr => accountMessage('error', apiError(xhr, 'Could not delete the account')));
+  });
+
+  /* My projects */
+
+  const fmtMB = b => b >= 1e9 ? (b / 1073741824).toFixed(1) + ' GB' : (b / 1048576).toFixed(1) + ' MB';
+
+  // Replacing the focused element (a renamed title, a deleted card) drops focus out of the dialog.
+  function refocusProjects() {
+    if (document.activeElement === document.body && $('#modal-projects').hasClass('show')) $('#modal-projects').trigger('focus');
+  }
+
+  function renderProjects(res) {
+    setMe(res);
+    const q = res.quota;
+    $('#quota-text').text(`${q.projects} of ${q.maxProjects} projects · ${fmtMB(q.bytes)} of ${fmtMB(q.maxBytes)} used`);
+    $('#quota-bar').css('width', Math.min(100, Math.max(q.bytes / q.maxBytes, q.projects / q.maxProjects) * 100) + '%');
+    const $list = $('#project-list').empty();
+    if (!res.projects.length) {
+      $list.append('<p class="text-secondary">No projects yet. Open a photo and use <i class="bi bi-share"></i> <b>Share</b> to save it here.</p>');
+      return;
+    }
+    res.projects.forEach(pr => {
+      const updated = new Date(pr.updated).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      $list.append(`<div class="col-sm-6 col-lg-4" data-project="${esc(pr.id)}"><div class="card project-card h-100">
+        ${pr.thumb ? `<img class="thumb" src="${esc(pr.thumb)}" alt="" loading="lazy">` : '<div class="thumb-empty"><i class="bi bi-image"></i></div>'}
+        <div class="card-body p-2">
+          <div class="card-title fw-semibold text-truncate mb-0" title="${esc(pr.title)}">${esc(pr.title)}</div>
+          <div class="small text-secondary text-truncate">${esc(pr.imageName)} · ${fmtMB(pr.imageSize)}</div>
+          <div class="small text-secondary">Updated ${esc(updated)}</div>
+        </div>
+        <div class="card-footer bg-transparent p-2 d-flex gap-1">
+          <a class="btn btn-sm btn-primary" href="?p=${encodeURIComponent(pr.id)}">Open</a>
+          <button class="btn btn-sm btn-outline-secondary" data-copy-link title="Copy view link"><i class="bi bi-link-45deg"></i></button>
+          <button class="btn btn-sm btn-outline-secondary" data-rename title="Rename"><i class="bi bi-pencil"></i></button>
+          <button class="btn btn-sm btn-outline-danger ms-auto" data-delete title="Delete"><i class="bi bi-trash"></i></button>
+        </div></div></div>`);
+    });
+  }
+
+  function loadProjects() {
+    $('#project-list').html('<div class="text-secondary"><span class="spinner-border spinner-border-sm"></span> Loading…</div>');
+    $.ajax({ url: API, data: { action: 'mine' }, dataType: 'json' })
+      .done(res => { renderProjects(res); refocusProjects(); })
+      .fail(xhr => $('#project-list').html(`<p class="text-danger">${esc(apiError(xhr, 'Could not load your projects'))}</p>`));
+  }
+
+  $('#btn-my-projects').on('click', () => { loadProjects(); modalProjects.show(); });
+
+  $('#project-list')
+    .on('click', '.card-title', function () { location.href = '?p=' + encodeURIComponent($(this).closest('[data-project]').attr('data-project')); })
+    .on('click', '[data-copy-link]', function () { copy(shareUrl($(this).closest('[data-project]').attr('data-project'))); })
+    .on('click', '[data-rename]', function () {
+      const $col = $(this).closest('[data-project]'), id = $col.attr('data-project'), $title = $col.find('.card-title');
+      const $input = $('<input type="text" class="form-control form-control-sm mb-1" maxlength="120">').val($title.text());
+      $title.replaceWith($input);
+      $input.trigger('focus').trigger('select');
+      let done = false;
+      const finish = save => {
+        if (done) return;
+        done = true;
+        const title = $input.val();
+        const put = t => {
+          $input.replaceWith($('<div class="card-title fw-semibold text-truncate mb-0"></div>').text(t).attr('title', t));
+          refocusProjects();
+        };
+        if (!save) { put($title.text()); return; }
+        api('rename', { title }, id)
+          .done(res => { put(res.title); if (share.id === id) share.title = res.title; })
+          .fail(xhr => { put($title.text()); toast(apiError(xhr, 'Could not rename'), 'danger'); });
+      };
+      $input.on('keydown', e => { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') { e.stopPropagation(); finish(false); } })
+            .on('blur', () => finish(true));
+    })
+    .on('click', '[data-delete]', function () {
+      const $b = $(this), id = $b.closest('[data-project]').attr('data-project');
+      if (!$b.hasClass('armed')) {   // first click asks, second click deletes
+        $b.addClass('armed btn-danger').removeClass('btn-outline-danger').html('Delete?');
+        setTimeout(() => $b.removeClass('armed btn-danger').addClass('btn-outline-danger').html('<i class="bi bi-trash"></i>'), 3000);
+        return;
+      }
+      api('delete-project', {}, id)
+        .done(() => {
+          toast('Project deleted.');
+          if (share.id === id) { setToken(id, null); leaveShare(); }
+          loadProjects();
+        })
+        .fail(xhr => toast(apiError(xhr, 'Could not delete'), 'danger'));
+    });
 
   /* ---------- OpenStreetMap overlay ---------- */
 
@@ -1964,7 +2266,20 @@ $(function () {
   LABEL_FONT_READY.then(() => { if (image.loaded) renderLabels(); });
   setMode('pan');
 
-  const sharedId = new URLSearchParams(location.search).get('p');
+  // Links from account emails: ?verify=TOKEN confirms the address, ?reset=TOKEN sets a new password.
+  const params = new URLSearchParams(location.search);
+  loadMe().always(() => {
+    const verify = params.get('verify'), reset = params.get('reset');
+    if (verify || reset) history.replaceState(null, '', location.pathname);
+    if (verify) {
+      api('verify', { token: verify })
+        .done(res => { setMe(res); toast('Thanks, your email is confirmed and you are logged in.', 'success'); })
+        .fail(xhr => toast(apiError(xhr, 'Could not confirm your email'), 'danger'));
+    }
+    if (reset) { resetToken = reset; showAuth('reset'); }
+  });
+
+  const sharedId = params.get('p');
   if (sharedId) {
     const m = location.hash.match(/edit=([0-9a-f]+)/);
     if (m) history.replaceState(null, '', '?p=' + encodeURIComponent(sharedId));   // keep the secret out of the address bar

@@ -16,25 +16,37 @@ The transform models are similarity (≥2 points, right for a true nadir shot), 
 
 Work is autosaved in the browser for each image. It can also be saved or loaded as a `.json` project file.
 
-## Sharing
+## Accounts and sharing
 
-**Share** uploads the image and its project data (password-protected) and returns two links:
+People can use the app without an account; everything is saved in their own browser. A free account (register → confirm email) adds **My projects**: **Share** saves the image and its project to the account and returns two links:
 
 - a **view link** (`?p=ID`): recipients explore and query; their own changes stay in their browser and can be reverted;
-- an **edit link** (`?p=ID#edit=TOKEN`): changes autosave to the server for everyone, with conflict detection.
+- an **edit link** (`?p=ID#edit=TOKEN`): changes autosave to the server for everyone, with conflict detection. The owner can replace it with a new one at any time.
 
-The server side is `api.php` (PHP 8.3+). Data is stored outside the web root in `/var/lib/nadir` (override with the `NADIR_DATA` environment variable):
+The owner can always edit their projects from any device, and can rename or delete them in My projects. Accounts support log in/out, forgot/reset password, changing name and password, and deleting the account (with its projects).
 
-```
-/var/lib/nadir/config.php          <?php return ['password_hash' => '...'];
-/var/lib/nadir/projects/<id>/      meta.json, project.json, image.jpg, history/
-```
-
-Set or change the upload password on the server:
+The server side is `api.php` plus `server/*.php` (PHP 8.3 with `pdo_sqlite` and `mbstring`). Data is stored outside the web root in `/var/lib/nadir` (override with the `NADIR_DATA` environment variable):
 
 ```
-PW='new password' php -r 'echo "<?php return ".var_export(["password_hash" => password_hash(getenv("PW"), PASSWORD_DEFAULT)], true).";\n";' > /var/lib/nadir/config.php
+/var/lib/nadir/config.php          optional settings (see below)
+/var/lib/nadir/nadir.sqlite        users, sessions, one-time tokens, project index, rate limits
+/var/lib/nadir/projects/<id>/      meta.json, project.json, image, thumb.jpg, history/
+/var/lib/nadir/osm/                OpenStreetMap cache
+/var/lib/nadir/mail.log            outgoing email while no mail service is configured
 ```
+
+`config.php` returns an array; every key is optional:
+
+```php
+<?php return [
+    'site_url' => 'https://nadirlab.online/',          // used in email links
+    'mail' => ['driver' => 'ses', 'region' => 'eu-north-1', 'key' => 'AKIA…', 'secret' => '…',
+               'from' => 'Nadir Lab <no-reply@nadirlab.online>'],   // default: ['driver' => 'log']
+    'quota_bytes' => 1073741824, 'quota_projects' => 100,           // per account
+];
+```
+
+Admin tasks: `sudo -u www-data php server/cli.php users` and `… assign-unowned EMAIL` (gives projects shared before accounts existed to that account).
 
 `.user.ini` raises PHP's upload limit to 60 MB for this directory (PHP-FPM).
 
@@ -43,7 +55,7 @@ PW='new password' php -r 'echo "<?php return ".var_export(["password_hash" => pa
 Live at https://nadirlab.online/ (Apache + PHP-FPM on hetzner3). The older copy is at https://monsym.se/nadir/.
 
 ```
-rsync -rt index.html api.php .user.ini css js hetzner3:/var/www/nadirlab/
+rsync -rt index.html api.php .user.ini css js server hetzner3:/var/www/nadirlab/
 ```
 
 Built with jQuery and Bootstrap. The coordinate maths is in `js/georef.js`.
