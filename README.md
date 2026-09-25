@@ -40,8 +40,10 @@ PW='new password' php -r 'echo "<?php return ".var_export(["password_hash" => pa
 
 ## Deploy
 
+Live at https://nadirlab.online/ (Apache + PHP-FPM on hetzner3). The older copy is at https://monsym.se/nadir/.
+
 ```
-rsync -rt index.html api.php .user.ini css js hetzner3:/var/www/monsym/nadir/
+rsync -rt index.html api.php .user.ini css js hetzner3:/var/www/nadirlab/
 ```
 
 Built with jQuery and Bootstrap. The coordinate maths is in `js/georef.js`.

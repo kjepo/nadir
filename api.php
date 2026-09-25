@@ -193,7 +193,7 @@ if ($action === 'osm') {
     foreach (OVERPASS as $url) {
         $ctx = stream_context_create(['http' => [
             'method' => 'POST', 'timeout' => 60, 'ignore_errors' => true,
-            'header' => "Content-Type: application/x-www-form-urlencoded\r\nUser-Agent: nadir-georeferencer (https://monsym.se/nadir/)\r\n",
+            'header' => "Content-Type: application/x-www-form-urlencoded\r\nUser-Agent: nadir-georeferencer (https://nadirlab.online/)\r\n",
             'content' => http_build_query(['data' => $query]),
         ]]);
         // Busy servers answer with an HTML error page; only a JSON result with elements counts.
