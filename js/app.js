@@ -2053,6 +2053,10 @@ $(function () {
           <button class="btn btn-sm btn-outline-danger ms-auto" data-delete title="Delete"><i class="bi bi-trash"></i></button>
         </div></div></div>`);
     });
+    // A preview that can't be made shows the placeholder instead.
+    $list.find('img.thumb').on('error', function () {
+      $(this).replaceWith('<div class="thumb-empty"><i class="bi bi-image"></i></div>');
+    });
   }
 
   function loadProjects() {

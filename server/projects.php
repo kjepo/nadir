@@ -70,10 +70,30 @@ function deleteProjectFiles(string $id): void {
     @rmdir($dir);
 }
 
+const IMAGEMAGICK = '/usr/bin/convert';
+
+// Make thumb.jpg from the project image when it is missing (projects saved before thumbnails
+// existed, or through the old monsym.se copy). JPEGs are decoded at reduced size, which keeps
+// memory low even for large panoramas.
+function ensureThumb(string $id): bool {
+    $dir = DATA_DIR . "/projects/$id";
+    $thumb = "$dir/thumb.jpg";
+    if (is_file($thumb)) return true;
+    if (!is_executable(IMAGEMAGICK)) return false;
+    $meta = json_decode((string) @file_get_contents("$dir/meta.json"), true);
+    $image = is_array($meta) ? "$dir/" . basename($meta['image']['file']) : '';
+    if (!is_file($image)) return false;
+    $tmp = "$dir/thumb.tmp" . bin2hex(random_bytes(4)) . '.jpg';
+    exec(IMAGEMAGICK . ' -define jpeg:size=960x960 ' . escapeshellarg($image . '[0]')
+         . ' -auto-orient -thumbnail 480x480 -strip -quality 80 ' . escapeshellarg($tmp) . ' 2>&1', $output, $status);
+    if ($status !== 0 || !is_file($tmp)) { @unlink($tmp); return false; }
+    return rename($tmp, $thumb);
+}
+
 function publicProject(array $row): array {
     return ['id' => $row['id'], 'title' => $row['title'], 'imageName' => $row['image_name'],
             'imageSize' => (int) $row['image_size'], 'created' => $row['created_at'], 'updated' => $row['updated_at'],
-            'thumb' => is_file(DATA_DIR . "/projects/{$row['id']}/thumb.jpg") ? "api.php?action=thumb&p={$row['id']}" : null];
+            'thumb' => "api.php?action=thumb&p={$row['id']}"];
 }
 
 /* ---------- Actions ---------- */
@@ -170,6 +190,7 @@ function actionImage(): never {
 
 function actionThumb(): never {
     $id = projectId();
+    ensureThumb($id);
     serveFile(DATA_DIR . "/projects/$id/thumb.jpg", 'image/jpeg', "$id.jpg");
 }
 
