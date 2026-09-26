@@ -24,6 +24,11 @@
  *   GET  mine                   the logged-in user's projects
  *   POST rename&p=ID {title}, delete-project&p=ID, new-edit-link&p=ID      (owner)
  *
+ * Admin (server/admin.php), admins only
+ *   GET  admin-stats, admin-users, admin-projects
+ *   POST admin-user    {id, op: verify|send-reset|disable|enable|make-admin|remove-admin|delete|delete-with-projects}
+ *   POST admin-project {id, op: owner, email} | {id, op: delete}
+ *
  * Map (server/osm.php)
  *   GET  osm&s=&w=&n=&e=        OpenStreetMap features near a photo
  */
@@ -35,6 +40,7 @@ require __DIR__ . '/server/mail.php';
 require __DIR__ . '/server/auth.php';
 require __DIR__ . '/server/projects.php';
 require __DIR__ . '/server/osm.php';
+require __DIR__ . '/server/admin.php';
 
 header('X-Content-Type-Options: nosniff');
 
@@ -47,6 +53,8 @@ $routes = [
     'update' => 'actionUpdate', 'mine' => 'actionMine', 'rename' => 'actionRename',
     'delete-project' => 'actionDeleteProject', 'new-edit-link' => 'actionNewEditLink',
     'osm' => 'actionOsm',
+    'admin-stats' => 'actionAdminStats', 'admin-users' => 'actionAdminUsers', 'admin-projects' => 'actionAdminProjects',
+    'admin-user' => 'actionAdminUser', 'admin-project' => 'actionAdminProject',
 ];
 $action = $_GET['action'] ?? '';
 if (!is_string($action) || !isset($routes[$action])) fail(400, 'Unknown action');

@@ -37,11 +37,11 @@
     <label class="btn btn-outline-primary" for="mode-measure" title="Measure distances (M)"><i class="bi bi-rulers"></i> <span class="d-none d-lg-inline">Measure</span></label>
   </div>
 
-  <button class="btn btn-sm btn-outline-info me-2" id="btn-locate" title="Show my current position (needs calibration and location access)" disabled><i class="bi bi-crosshair"></i> <span class="d-none d-xl-inline">Locate me</span></button>
+  <button class="btn btn-sm btn-outline-info me-2" id="btn-locate" title="Show my current position (needs calibration and location access)" disabled><i class="bi bi-crosshair"></i> <span class="d-none d-xl-inline wide-label">Locate me</span></button>
 
   <div class="btn-group btn-group-sm me-2" id="osm-group">
     <button class="btn btn-outline-success" id="btn-osm" title="Show OpenStreetMap roads, buildings and water over the photo" disabled>
-      <i class="bi bi-map osm-icon"></i><span class="spinner-border spinner-border-sm d-none"></span> <span class="d-none d-xl-inline">Map</span>
+      <i class="bi bi-map osm-icon"></i><span class="spinner-border spinner-border-sm d-none"></span> <span class="d-none d-xl-inline wide-label">Map</span>
     </button>
     <button class="btn btn-outline-success dropdown-toggle dropdown-toggle-split" id="btn-osm-menu" data-bs-toggle="dropdown" data-bs-auto-close="outside" title="Map layer options" disabled></button>
     <div class="dropdown-menu p-3 small" style="min-width: 260px">
@@ -64,10 +64,10 @@
   </div>
 
   <span id="share-status" class="small me-2 d-none"></span>
-  <button class="btn btn-sm btn-outline-light me-2" id="btn-export-top" title="Download the full-resolution image with labels drawn in (.jpg)" disabled><i class="bi bi-image"></i> <span class="d-none d-md-inline">Export JPEG</span></button>
+  <button class="btn btn-sm btn-outline-light me-2" id="btn-export-top" title="Download the full-resolution image with labels drawn in (.jpg)" disabled><i class="bi bi-image"></i> <span class="d-none d-md-inline wide-label">Export JPEG</span></button>
   <button class="btn btn-sm btn-info me-2" id="btn-share" title="Share this project with others" disabled><i class="bi bi-share"></i> <span class="d-none d-md-inline">Share</span></button>
   <div class="dropdown">
-    <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-box-seam"></i> <span class="d-none d-md-inline">Project</span></button>
+    <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown"><i class="bi bi-box-seam"></i> <span class="d-none d-md-inline wide-label">Project</span></button>
     <ul class="dropdown-menu dropdown-menu-end">
       <li><button class="dropdown-item" id="btn-save"><i class="bi bi-download"></i> Save project (.json)</button></li>
       <li><label class="dropdown-item mb-0"><i class="bi bi-upload"></i> Load project…<input type="file" id="file-project" accept=".json,application/json" hidden></label></li>
@@ -86,6 +86,7 @@
         <li><h6 class="dropdown-header text-truncate" id="account-email" style="max-width: 240px"></h6></li>
         <li><button class="dropdown-item" id="btn-my-projects"><i class="bi bi-folder2"></i> My projects</button></li>
         <li><button class="dropdown-item" id="btn-account"><i class="bi bi-gear"></i> Account settings</button></li>
+        <li><button class="dropdown-item d-none" id="btn-admin"><i class="bi bi-shield-lock"></i> Admin</button></li>
         <li><hr class="dropdown-divider"></li>
         <li><button class="dropdown-item" id="btn-logout"><i class="bi bi-box-arrow-right"></i> Log out</button></li>
       </ul>
@@ -465,6 +466,49 @@
         <div class="small text-secondary mb-1" id="quota-text"></div>
         <div class="progress mb-3" style="height: 6px"><div class="progress-bar" id="quota-bar"></div></div>
         <div id="project-list" class="row g-3"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Admin -->
+<div class="modal fade" id="modal-admin" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header flex-wrap gap-2">
+        <h5 class="modal-title me-3"><i class="bi bi-shield-lock"></i> Admin</h5>
+        <ul class="nav nav-pills small" id="admin-tabs">
+          <li class="nav-item"><button class="nav-link py-1 active" data-admin-tab="overview">Overview</button></li>
+          <li class="nav-item"><button class="nav-link py-1" data-admin-tab="users">Accounts <span class="badge text-bg-secondary" id="admin-count-users"></span></button></li>
+          <li class="nav-item"><button class="nav-link py-1" data-admin-tab="projects">Projects <span class="badge text-bg-secondary" id="admin-count-projects"></span></button></li>
+        </ul>
+        <button type="button" class="btn-close ms-auto" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert small py-2 d-none" id="admin-msg"></div>
+        <div data-admin-pane="overview" id="admin-overview"></div>
+        <div data-admin-pane="users" class="d-none">
+          <input type="search" class="form-control form-control-sm mb-2" id="admin-user-search" placeholder="Search email or name…">
+          <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle small mb-0">
+              <thead><tr><th>Account</th><th>Created</th><th>Last login</th><th class="text-end">Projects</th><th class="text-end">Storage</th><th></th></tr></thead>
+              <tbody id="admin-users"></tbody>
+            </table>
+          </div>
+        </div>
+        <div data-admin-pane="projects" class="d-none">
+          <div class="d-flex flex-wrap gap-2 mb-2">
+            <input type="search" class="form-control form-control-sm flex-grow-1" style="max-width: 360px" id="admin-project-search" placeholder="Search title, image or owner…">
+            <select class="form-select form-select-sm w-auto" id="admin-project-owner"></select>
+          </div>
+          <datalist id="admin-emails"></datalist>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle small mb-0">
+              <thead><tr><th></th><th>Project</th><th>Owner</th><th>Image</th><th>Updated</th><th></th></tr></thead>
+              <tbody id="admin-projects"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </div>

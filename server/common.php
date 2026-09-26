@@ -104,10 +104,21 @@ function db(): PDO {
     return $pdo;
 }
 
-// Schema versions are tracked with PRAGMA user_version.
+// Schema versions are tracked with PRAGMA user_version; each step runs once.
 function migrate(PDO $pdo): void {
     $version = (int) $pdo->query('PRAGMA user_version')->fetchColumn();
-    if ($version >= 1) return;
+    if ($version < 1) migrateV1($pdo);
+    if ($version < 2) {
+        $pdo->beginTransaction();
+        $pdo->exec("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE users ADD COLUMN last_login_at TEXT;
+                    ALTER TABLE users ADD COLUMN disabled_at TEXT;
+                    PRAGMA user_version = 2;");
+        $pdo->commit();
+    }
+}
+
+function migrateV1(PDO $pdo): void {
     $pdo->beginTransaction();
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS users (
@@ -144,17 +155,25 @@ function migrate(PDO $pdo): void {
         CREATE TABLE IF NOT EXISTS attempts (key TEXT NOT NULL, at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS attempts_key ON attempts(key, at);
     ");
-    // Index projects shared before accounts existed; they start without an owner.
+    indexProjectFiles($pdo);   // projects shared before accounts existed start without an owner
+    $pdo->exec('PRAGMA user_version = 1');
+    $pdo->commit();
+}
+
+// Add projects that exist on disk but not in the index (e.g. uploaded through the old
+// monsym.se copy, which knows nothing about accounts). They get no owner. Returns how many.
+function indexProjectFiles(PDO $pdo): int {
     $insert = $pdo->prepare('INSERT OR IGNORE INTO projects (id, title, image_name, image_size, created_at, updated_at)
                              VALUES (?, ?, ?, ?, ?, ?)');
+    $added = 0;
     foreach (glob(DATA_DIR . '/projects/*/meta.json') ?: [] as $file) {
         $meta = json_decode((string) file_get_contents($file), true);
         if (!is_array($meta) || empty($meta['id'])) continue;
         $insert->execute([$meta['id'], $meta['title'] ?? $meta['image']['name'] ?? '', $meta['image']['name'] ?? '',
                           (int) ($meta['image']['size'] ?? 0), $meta['created'] ?? gmdate('c'), $meta['updated'] ?? gmdate('c')]);
+        $added += $insert->rowCount();
     }
-    $pdo->exec('PRAGMA user_version = 1');
-    $pdo->commit();
+    return $added;
 }
 
 /*

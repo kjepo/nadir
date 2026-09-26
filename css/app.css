@@ -112,3 +112,12 @@ body { display: flex; flex-direction: column; overflow: hidden; background: #1b1
 .project-card .thumb { aspect-ratio: 4 / 3; object-fit: contain; background: #2a2d31; width: 100%; border-top-left-radius: inherit; border-top-right-radius: inherit; }
 .project-card .thumb-empty { aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; background: #2a2d31; color: #888; font-size: 2rem; }
 .project-card .card-title { cursor: pointer; }
+
+/* Admin */
+#admin-overview .stat { border: 1px solid var(--bs-border-color); border-radius: .5rem; padding: .6rem .8rem; height: 100%; }
+#admin-overview .stat .n { font-size: 1.5rem; font-weight: 600; line-height: 1.2; }
+.admin-thumb { width: 64px; height: 48px; object-fit: contain; background: #2a2d31; border-radius: 4px; display: block; }
+#admin-users .dropdown-item.armed, #admin-projects .armed { font-weight: 600; }
+
+/* Below 1600 px some toolbar buttons show only their icon (with a tooltip) so it fits on one row. */
+@media (max-width: 1599.98px) { .wide-label { display: none !important; } }

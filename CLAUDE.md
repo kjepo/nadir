@@ -18,7 +18,8 @@
   - `auth.php`: accounts and sessions
   - `projects.php`: projects, including thumbnails generated on demand
   - `osm.php`: the OpenStreetMap proxy
-  - `cli.php`: admin commands
+  - `admin.php`: the admin panel API
+  - `cli.php`: admin commands (`users`, `make-admin`/`remove-admin EMAIL`, `assign-unowned EMAIL`)
 
   Apache denies direct access to `server/`.
 - `.user.ini`: raises PHP-FPM upload limits to 60 MB for the app directory.
@@ -35,6 +36,8 @@
 - Info bubble: a single `bubble = {type: 'query'|'area'|'measure', id}`.
 - Modes: pan, cp, query, label, area, measure. Shortcuts: P/Esc, C, Q, L, A, M, +/−/0. While drawing (`drawing` array), Enter finishes, Backspace undoes and Esc cancels.
 - Dialogs: when a request disables or hides the focused button, focus drops to `<body>` and Bootstrap stops handling Esc. `busy()` and `refocusProjects()` give focus back to the dialog, and a global handler closes the open dialog on Esc when focus is on `<body>`.
+- Admin panel (client): the `#modal-admin` dialog has three tabs, and its data comes from three GET endpoints loaded together. Destructive actions use `confirmed()`: the first click changes the label to "… Click again", and the second click acts. Row menus use `data-bs-popper-config='{"strategy":"fixed"}'` so they aren't clipped by `.table-responsive`.
+- Toolbar: below 1600 px, `.wide-label` hides the text of Locate me, Map, Export JPEG and Project, so the toolbar fits on one row from 1280 px up. Phones still wrap it onto two rows.
 - Accounts on the client: `me`/`quota` come from `api.php?action=me` at start-up. `?verify=` and `?reset=` in the URL come from the account emails. After logging in, an open project that couldn't be edited is reloaded so ownership applies. `afterAuth` reopens the Share dialog after a log-in that started there.
 - Persistence: localStorage per image (`nadir:v1:name:size:WxH`) or per share (`nadir:share:ID` with the server `base` version). Edit tokens live in `nadir:tokens` and OSM prefs in `nadir:osm`. localStorage is per origin, so monsym.se and nadirlab.online do not share it.
 
@@ -46,6 +49,13 @@
 - **Data:** everything lives in `/var/lib/nadir` (owned by www-data, 750): `config.php` (see README; its old `password_hash` key is only used by the monsym.se copy), `nadir.sqlite`, `projects/<id>/`, `osm/`, and `mail.log` (the log mail driver) plus `mail-errors.log`. Files there must stay writable by www-data: an earlier `: > mail.log` run as root broke mail logging until it was chowned.
 - **Email:** live since 2026-09-26 through Amazon SES in `eu-west-2` (London), with the account out of the sandbox. The sender is `Nadir Lab <no-reply@nadirlab.online>`. The domain identity is verified with Easy DKIM (3 CNAMEs at Namecheap) plus a DMARC TXT (`v=DMARC1; p=none;`). IAM user `nadirlab-ses` is limited to `ses:SendEmail` from that address, and its key lives in `/var/lib/nadir/config.php` (root:www-data 640), never in git.
 - **Thumbnails:** the browser uploads a 480 px `thumb.jpg` when a project is created. For projects without one (older ones, or those uploaded via monsym.se), `action=thumb` generates it on first request with ImageMagick (`/usr/bin/convert -define jpeg:size=960x960 … -thumbnail 480x480`), which handles the 38 MP panorama in about 0.4 s. The server has no PHP GD. My projects fits thumbnails (`object-fit: contain`) so panoramas show in full.
+- **Admin:** `users.is_admin` (schema v2, which also added `last_login_at` and `disabled_at`). The flag is set only from the CLI or by another admin in the panel, and kjell@irstafoto.se is admin since 2026-09-26.
+  - The admin API endpoints are `admin-stats`, `admin-users`, `admin-projects`, `admin-user {id, op}` and `admin-project {id, op}`, all behind `requireAdmin()`.
+  - Admins count as owners of every project (`canManage()`), so they can edit, rename, delete and make a new edit link.
+  - Disabled accounts have their sessions removed, and login, confirmation and reset are refused. `currentUser()` also ignores disabled accounts.
+  - Admins can't disable, demote or delete themselves in the panel.
+  - `admin-stats` and `admin-projects` call `indexProjectFiles()`, which picks up projects uploaded through monsym.se (not indexed otherwise) with no owner.
+  - Schema changes go in `migrate()` as `if ($version < N)` steps. The database was backed up to `/root/nadir.sqlite.before-admin` before v2.
 - **Existing projects:** on first run, projects made before accounts were indexed without an owner. Hand them to an account with `sudo -u www-data php server/cli.php assign-unowned EMAIL`.
 - **OSM proxy:** the bbox is snapped outwards to a 0.005° grid, with a max span of 0.05° lat. It tries overpass-api.de, then the mail.ru mirror, then private.coffee, trims geometry to near the photo and caches for 30 days. Overpass rejects requests without a proper User-Agent (406), and the public servers are often slow or return 504.
 - **PHP versions:** the server has PHP 8.3 with `php8.3-sqlite3` and `php8.3-mbstring` (installed 2026-09-26) plus ImageMagick, and no curl extension (it uses stream contexts). Local PHP is 8.5, so avoid 8.4+-only functions, don't use `$http_response_header`, and remember that local PHP has extensions the server may not.
@@ -70,6 +80,8 @@ Gotchas seen in tests:
 - **Label selectors:** a label's shape appears twice (outline and fill), so use `.last()` in locators.
 - **Clicks near markers:** clicking within a few screen pixels of a marker opens that marker's dialog instead of doing the mode's action, so keep test clicks well away from markers.
 - **Drone test photos:** made by adding DJI tags to a copy of the sample photo, e.g. `exiftool -XMP-drone-dji:RelativeAltitude=+223.11 -XMP-drone-dji:GimbalYawDegree=+200.0 -XMP-drone-dji:GimbalPitchDegree=-90.0`. 223.11 m at 24 mm gives the synthetic 8 cm/px.
+- **Deleting with variables:** the Claude Code safety check blocks `rm` on paths built from shell variables. Use literal absolute paths or a fresh directory instead.
+- **Quoting JSON in shell tests:** JSON containing `$VAR` nested inside `$( … )` in double quotes gets mangled. Build request bodies with `printf '{"id":%s}' "$ID"`.
 - **Scratchpad:** the session scratchpad (with `playwright-core` and the test scripts) is not kept between sessions, so tests have to be rewritten. Consider keeping them in the repo.
 
 ## Workflow so far
@@ -92,6 +104,7 @@ Gotchas seen in tests:
   - The user's account `kjell@irstafoto.se` owns the two existing projects.
   - Thumbnails generated on the server.
   - Approximate calibration from drone metadata.
+  - Admin panel (overview, accounts, projects), with kjell@irstafoto.se as admin. The toolbar now fits on one row on desktops.
 
 ## Ideas discussed but not built
 

@@ -1996,6 +1996,7 @@ $(function () {
       $('#account-name').text(me.name || me.email.split('@')[0]);
       $('#account-email').text(me.email);
     }
+    $('#btn-admin').toggleClass('d-none', !(me && me.isAdmin));
   }
 
   function loadMe() {
@@ -2232,6 +2233,194 @@ $(function () {
           loadProjects();
         })
         .fail(xhr => toast(apiError(xhr, 'Could not delete'), 'danger'));
+    });
+
+  /* Admin panel */
+
+  const modalAdmin = new bootstrap.Modal('#modal-admin');
+  const admin = { stats: null, users: [], projects: [], me: null, tab: 'overview', ownerFilter: '' };
+
+  const fmtDate = iso => iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+  const fmtDateTime = iso => iso ? new Date(iso).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric',
+                                                                            hour: '2-digit', minute: '2-digit' }) : 'never';
+
+  function adminMessage(kind, text) {
+    $('#admin-msg').removeClass('d-none alert-success alert-danger').addClass(kind === 'error' ? 'alert-danger' : 'alert-success').text(text);
+  }
+
+  function loadAdmin() {
+    const get = action => $.ajax({ url: API, data: { action }, dataType: 'json' });
+    return $.when(get('admin-stats'), get('admin-users'), get('admin-projects'))
+      .done((s, u, p) => {
+        admin.stats = s[0];
+        admin.users = u[0].users;
+        admin.me = u[0].me;
+        admin.projects = p[0].projects;
+        renderAdmin();
+      })
+      .fail(xhr => adminMessage('error', apiError(xhr, 'Could not load admin data')));
+  }
+
+  function showAdminTab(tab) {
+    admin.tab = tab;
+    $('#admin-tabs .nav-link').removeClass('active').filter(`[data-admin-tab="${tab}"]`).addClass('active');
+    $('[data-admin-pane]').addClass('d-none').filter(`[data-admin-pane="${tab}"]`).removeClass('d-none');
+  }
+
+  function renderAdmin() {
+    $('#admin-count-users').text(admin.users.length);
+    $('#admin-count-projects').text(admin.projects.length);
+    renderAdminOverview();
+    renderAdminUsers();
+    renderAdminProjects();
+  }
+
+  function renderAdminOverview() {
+    const st = admin.stats, u = st.users, p = st.projects;
+    const stat = (n, label, sub) => `<div class="col-6 col-md-4 col-lg-3"><div class="stat"><div class="n">${n}</div>
+      <div class="fw-semibold">${label}</div><div class="text-secondary">${sub || '&nbsp;'}</div></div></div>`;
+    const recentUsers = admin.users.slice(0, 5).map(x => `<li class="list-group-item px-0 d-flex justify-content-between">
+      <span class="text-truncate">${esc(x.email)}</span><span class="text-secondary ms-2 text-nowrap">${esc(fmtDate(x.created))}</span></li>`).join('');
+    const recentProjects = admin.projects.slice(0, 5).map(x => `<li class="list-group-item px-0 d-flex justify-content-between">
+      <a class="text-truncate" href="?p=${encodeURIComponent(x.id)}">${esc(x.title)}</a>
+      <span class="text-secondary ms-2 text-nowrap">${esc(x.ownerEmail || 'no owner')} · ${esc(fmtDate(x.updated))}</span></li>`).join('');
+    $('#admin-overview').html(`<div class="row g-3 mb-4 small">
+        ${stat(u.total, 'Accounts', `${u.verified} confirmed · ${u.unverified} unconfirmed${u.disabled ? ` · ${u.disabled} disabled` : ''}`)}
+        ${stat(u.new7, 'New this week', `${u.new30} in the last 30 days`)}
+        ${stat(u.active30, 'Active', 'logged in during the last 30 days')}
+        ${stat(u.admins, u.admins === 1 ? 'Admin' : 'Admins', '')}
+        ${stat(p.total, 'Projects', `${p.unowned} without an owner · ${p.new30} new in 30 days`)}
+        ${stat(fmtMB(p.bytes), 'Images stored', '')}
+        ${stat(fmtMB(st.disk.free), 'Disk free', st.disk.total ? `of ${fmtMB(st.disk.total)}` : '')}
+        ${stat(st.mail === 'ses' ? 'SES' : 'Log file', 'Email', st.mail === 'ses' ? 'Amazon SES' : 'not being delivered')}
+      </div>
+      <div class="row g-4 small">
+        <div class="col-md-6"><h6>Latest accounts</h6><ul class="list-group list-group-flush">${recentUsers || '<li class="list-group-item px-0 text-secondary">None yet</li>'}</ul></div>
+        <div class="col-md-6"><h6>Latest projects</h6><ul class="list-group list-group-flush">${recentProjects || '<li class="list-group-item px-0 text-secondary">None yet</li>'}</ul></div>
+      </div>`);
+  }
+
+  function renderAdminUsers() {
+    const q = $('#admin-user-search').val().trim().toLowerCase();
+    const rows = admin.users.filter(x => !q || x.email.toLowerCase().includes(q) || x.name.toLowerCase().includes(q));
+    $('#admin-users').html(rows.map(x => {
+      const self = x.id === admin.me;
+      const badges = [x.isAdmin ? '<span class="badge text-bg-primary">admin</span>' : '',
+                      x.verified ? '' : '<span class="badge text-bg-warning">unconfirmed</span>',
+                      x.disabled ? '<span class="badge text-bg-danger">disabled</span>' : '',
+                      self ? '<span class="badge text-bg-light border">you</span>' : ''].join(' ');
+      const item = (op, label, cls, confirm) => `<li><button class="dropdown-item ${cls || ''}" data-user-op="${op}"
+        ${confirm ? `data-confirm="${esc(confirm)}"` : ''}>${label}</button></li>`;
+      const items = [
+        x.projects ? item('show-projects', '<i class="bi bi-folder2"></i> Show projects') : '',
+        x.verified ? '' : item('verify', '<i class="bi bi-check2-circle"></i> Mark as confirmed'),
+        item('send-reset', '<i class="bi bi-envelope"></i> Send password reset'),
+        self ? '' : x.isAdmin ? item('remove-admin', '<i class="bi bi-shield-x"></i> Remove admin', '', 'Remove admin rights?')
+                              : item('make-admin', '<i class="bi bi-shield-check"></i> Make admin', '', 'Give full admin rights?'),
+        self ? '' : x.disabled ? item('enable', '<i class="bi bi-unlock"></i> Enable account')
+                               : item('disable', '<i class="bi bi-lock"></i> Disable account', 'text-danger', 'Disable and log out?'),
+        self ? '' : '<li><hr class="dropdown-divider"></li>',
+        self ? '' : item('delete', '<i class="bi bi-person-x"></i> Delete account, keep projects', 'text-danger', 'Delete this account?'),
+        self || !x.projects ? '' : item('delete-with-projects', `<i class="bi bi-trash"></i> Delete account and ${x.projects} project${x.projects > 1 ? 's' : ''}`,
+                                        'text-danger', `Delete account and ${x.projects} project(s)?`),
+      ].join('');
+      return `<tr data-user="${x.id}">
+        <td><div class="fw-semibold">${esc(x.email)} ${badges}</div>${x.name ? `<div class="text-secondary">${esc(x.name)}</div>` : ''}</td>
+        <td class="text-nowrap">${esc(fmtDate(x.created))}</td>
+        <td class="text-nowrap">${esc(fmtDateTime(x.lastLogin))}</td>
+        <td class="text-end">${x.projects}</td>
+        <td class="text-end text-nowrap">${x.bytes ? fmtMB(x.bytes) : ''}</td>
+        <td class="text-end"><div class="dropdown">
+          <button class="btn btn-sm btn-outline-secondary py-0" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                  data-bs-popper-config='{"strategy":"fixed"}' title="Actions"><i class="bi bi-three-dots"></i></button>
+          <ul class="dropdown-menu dropdown-menu-end small">${items}</ul></div></td></tr>`;
+    }).join('') || '<tr><td colspan="6" class="text-secondary">No accounts match.</td></tr>');
+  }
+
+  function renderAdminProjects() {
+    const $owner = $('#admin-project-owner');
+    const owners = [...new Set(admin.projects.map(x => x.ownerEmail).filter(Boolean))].sort();
+    $owner.html(`<option value="">All owners</option><option value="none">No owner</option>` +
+                owners.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('')).val(admin.ownerFilter);
+    $('#admin-emails').html(admin.users.map(x => `<option value="${esc(x.email)}">`).join(''));
+    const q = $('#admin-project-search').val().trim().toLowerCase(), f = admin.ownerFilter;
+    const rows = admin.projects.filter(x =>
+      (!f || (f === 'none' ? !x.ownerEmail : x.ownerEmail === f)) &&
+      (!q || [x.title, x.imageName, x.ownerEmail || '', x.id].some(v => v.toLowerCase().includes(q))));
+    $('#admin-projects').html(rows.map(x => `<tr data-project="${esc(x.id)}">
+        <td><img class="admin-thumb" src="${esc(x.thumb)}" alt="" loading="lazy"></td>
+        <td><a class="fw-semibold" href="?p=${encodeURIComponent(x.id)}">${esc(x.title)}</a><div class="text-secondary font-monospace">${esc(x.id)}</div></td>
+        <td class="owner-cell">${x.ownerEmail ? esc(x.ownerEmail) : '<span class="badge text-bg-secondary">no owner</span>'}
+          <button class="icon-btn" data-project-owner title="Change owner"><i class="bi bi-pencil"></i></button></td>
+        <td><div class="text-truncate" style="max-width: 220px">${esc(x.imageName)}</div><div class="text-secondary">${fmtMB(x.imageSize)}</div></td>
+        <td class="text-nowrap">${esc(fmtDate(x.updated))}</td>
+        <td class="text-end text-nowrap">
+          <a class="btn btn-sm btn-primary py-0" href="?p=${encodeURIComponent(x.id)}">Open</a>
+          <button class="btn btn-sm btn-outline-secondary py-0" data-project-copy title="Copy view link"><i class="bi bi-link-45deg"></i></button>
+          <button class="btn btn-sm btn-outline-danger py-0" data-project-delete title="Delete"><i class="bi bi-trash"></i></button>
+        </td></tr>`).join('') || '<tr><td colspan="6" class="text-secondary">No projects match.</td></tr>');
+    $('#admin-projects img.admin-thumb').on('error', function () { $(this).css('visibility', 'hidden'); });
+  }
+
+  // A destructive button or menu item asks once ("Click again to …"), then acts on the second click.
+  function confirmed($el) {
+    const question = $el.attr('data-confirm');
+    if (!question || $el.hasClass('armed')) return true;
+    const html = $el.html();
+    $el.addClass('armed').html(`<i class="bi bi-exclamation-triangle"></i> ${esc(question)} Click again`);
+    setTimeout(() => { if ($el.hasClass('armed')) $el.removeClass('armed').html(html); }, 4000);
+    return false;
+  }
+
+  function adminPost(action, body) {
+    return api(action, body)
+      .done(res => { adminMessage('info', res.message || 'Done.'); loadAdmin(); })
+      .fail(xhr => adminMessage('error', apiError(xhr, 'That did not work')));
+  }
+
+  $('#btn-admin').on('click', () => {
+    $('#admin-msg').addClass('d-none');
+    showAdminTab(admin.tab);
+    $('#admin-overview').html('<div class="text-secondary"><span class="spinner-border spinner-border-sm"></span> Loading…</div>');
+    modalAdmin.show();
+    loadAdmin();
+  });
+  $('#admin-tabs').on('click', '[data-admin-tab]', function () { showAdminTab($(this).attr('data-admin-tab')); });
+  $('#admin-user-search').on('input', renderAdminUsers);
+  $('#admin-project-search').on('input', renderAdminProjects);
+  $('#admin-project-owner').on('change', function () { admin.ownerFilter = this.value; renderAdminProjects(); });
+
+  $('#admin-users').on('click', '[data-user-op]', function () {
+    const $b = $(this), op = $b.attr('data-user-op'), id = +$b.closest('[data-user]').attr('data-user');
+    if (op === 'show-projects') {
+      admin.ownerFilter = (admin.users.find(x => x.id === id) || {}).email || '';
+      $('#admin-project-search').val('');
+      renderAdminProjects();
+      showAdminTab('projects');
+      return;
+    }
+    if (!confirmed($b)) return;
+    bootstrap.Dropdown.getOrCreateInstance($b.closest('.dropdown').find('[data-bs-toggle]')[0]).hide();
+    adminPost('admin-user', { id, op });
+  });
+
+  $('#admin-projects')
+    .on('click', '[data-project-copy]', function () { copy(shareUrl($(this).closest('[data-project]').attr('data-project'))); })
+    .on('click', '[data-project-delete]', function () {
+      const $b = $(this).attr('data-confirm', 'Delete?');
+      if (!confirmed($b)) return;
+      adminPost('admin-project', { id: $b.closest('[data-project]').attr('data-project'), op: 'delete' });
+    })
+    .on('click', '[data-project-owner]', function () {
+      const $cell = $(this).closest('.owner-cell'), id = $cell.closest('[data-project]').attr('data-project');
+      const current = (admin.projects.find(x => x.id === id) || {}).ownerEmail || '';
+      $cell.html(`<div class="input-group input-group-sm" style="min-width: 240px">
+        <input type="email" class="form-control" list="admin-emails" placeholder="Account email (empty = no owner)" value="${esc(current)}">
+        <button class="btn btn-primary" data-owner-save>Save</button></div>`);
+      const $in = $cell.find('input').trigger('focus').trigger('select');
+      const save = () => adminPost('admin-project', { id, op: 'owner', email: $in.val().trim() });
+      $cell.find('[data-owner-save]').on('click', save);
+      $in.on('keydown', e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') { e.stopPropagation(); renderAdminProjects(); } });
     });
 
   /* ---------- OpenStreetMap overlay ---------- */

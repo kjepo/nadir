@@ -31,11 +31,17 @@ function hasEditToken(array $meta): bool {
     return is_string($token) && $token !== '' && hash_equals($meta['tokenHash'], hash('sha256', $token));
 }
 
+// The owner, or an admin, may manage a project.
+function canManage(?array $row): bool {
+    return isOwner($row) || isAdmin();
+}
+
 function requireOwnedProject(): array {
     requireUser();
     $id = projectId();
     $row = projectRow($id);
-    if (!isOwner($row)) fail(403, 'Only the owner can do that');
+    if (!$row) fail(404, 'Project not found');
+    if (!canManage($row)) fail(403, 'Only the owner can do that');
     return $row;
 }
 
@@ -160,8 +166,8 @@ function actionGet(): never {
     respond([
         'id' => $id, 'version' => $meta['version'], 'updated' => $meta['updated'],
         'title' => $row['title'] ?? $img['name'],
-        'isOwner' => isOwner($row),
-        'canEdit' => isOwner($row) || hasEditToken($meta),
+        'isOwner' => canManage($row),
+        'canEdit' => canManage($row) || hasEditToken($meta),
         'tokenValid' => hasEditToken($meta),
         'image' => ['name' => $img['name'], 'width' => $img['width'], 'height' => $img['height'],
                     'size' => $img['size'], 'url' => "api.php?action=image&p=$id"],
@@ -201,7 +207,7 @@ function actionUpdate(): never {
     $lock = fopen("$dir/.lock", 'c');
     if (!$lock || !flock($lock, LOCK_EX)) fail(500, 'Could not lock project');
     $meta = readJson("$dir/meta.json");
-    if (!isOwner(projectRow($id)) && !hasEditToken($meta)) fail(403, 'You are not allowed to edit this project');
+    if (!canManage(projectRow($id)) && !hasEditToken($meta)) fail(403, 'You are not allowed to edit this project');
     $body = jsonBody();
     $project = validProject($body['project'] ?? null);
     if ((int) ($body['baseVersion'] ?? 0) !== $meta['version']) {

@@ -13,7 +13,8 @@ const RESET_MINUTES = 60;
 const MIN_PASSWORD = 8;
 
 function publicUser(array $u): array {
-    return ['id' => (int) $u['id'], 'email' => $u['email'], 'name' => $u['name'], 'verified' => $u['verified_at'] !== null];
+    return ['id' => (int) $u['id'], 'email' => $u['email'], 'name' => $u['name'], 'verified' => $u['verified_at'] !== null,
+            'isAdmin' => !empty($u['is_admin'])];
 }
 
 function currentUser(): ?array {
@@ -22,7 +23,8 @@ function currentUser(): ?array {
     $user = null;
     $token = $_COOKIE[SESSION_COOKIE] ?? '';
     if (!is_string($token) || !preg_match('/^[0-9a-f]{64}$/', $token)) return null;
-    $stmt = db()->prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ? AND s.expires_at > ?');
+    $stmt = db()->prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+                           WHERE s.id_hash = ? AND s.expires_at > ? AND u.disabled_at IS NULL');
     $stmt->execute([hash('sha256', $token), time()]);
     $user = $stmt->fetch() ?: null;
     return $user;
@@ -33,6 +35,19 @@ function requireUser(): array {
     if (!$u) fail(401, 'Please log in first');
     return $u;
 }
+
+function isAdmin(): bool {
+    $u = currentUser();
+    return $u !== null && !empty($u['is_admin']);
+}
+
+function requireAdmin(): array {
+    $u = requireUser();
+    if (empty($u['is_admin'])) fail(403, 'Admins only');
+    return $u;
+}
+
+const DISABLED_MESSAGE = 'This account has been disabled. Please contact the site owner.';
 
 function setSessionCookie(string $value, int $expires): void {
     setcookie(SESSION_COOKIE, $value, ['expires' => $expires, 'path' => '/', 'secure' => isHttps(),
@@ -45,6 +60,7 @@ function startSession(int $userId): void {
     db()->prepare('INSERT INTO sessions (id_hash, user_id, created_at, expires_at, user_agent) VALUES (?, ?, ?, ?, ?)')
         ->execute([hash('sha256', $token), $userId, time(), $expires, substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 200)]);
     if (random_int(1, 20) === 1) db()->prepare('DELETE FROM sessions WHERE expires_at < ?')->execute([time()]);
+    db()->prepare('UPDATE users SET last_login_at = ? WHERE id = ?')->execute([gmdate('c'), $userId]);
     setSessionCookie($token, $expires);
 }
 
@@ -174,6 +190,7 @@ function actionVerify(): never {
     requirePost();
     $user = useToken((string) (jsonBody()['token'] ?? ''), 'verify');
     if (!$user) fail(400, 'This confirmation link is invalid or has expired. Log in to get a new one.');
+    if ($user['disabled_at'] !== null) fail(403, DISABLED_MESSAGE);
     if ($user['verified_at'] === null) {
         db()->prepare('UPDATE users SET verified_at = ? WHERE id = ?')->execute([gmdate('c'), $user['id']]);
     }
@@ -211,6 +228,7 @@ function actionLogin(): never {
         fail(401, 'Wrong email or password');
     }
     clearAttempts($emailKey);
+    if ($user['disabled_at'] !== null) fail(403, DISABLED_MESSAGE);
     if ($user['verified_at'] === null) {
         fail(403, 'Please confirm your email address first. Check your inbox for the confirmation link.', ['code' => 'unverified']);
     }
@@ -244,6 +262,7 @@ function actionReset(): never {
     $password = validPassword($b['password'] ?? '');
     $user = useToken((string) ($b['token'] ?? ''), 'reset');
     if (!$user) fail(400, 'This reset link is invalid or has expired. Please ask for a new one.');
+    if ($user['disabled_at'] !== null) fail(403, DISABLED_MESSAGE);
     // A reset link also proves the address works, so it confirms an unverified account.
     db()->prepare('UPDATE users SET password_hash = ?, verified_at = COALESCE(verified_at, ?) WHERE id = ?')
         ->execute([password_hash($password, PASSWORD_DEFAULT), gmdate('c'), $user['id']]);

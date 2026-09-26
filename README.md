@@ -46,7 +46,21 @@ The server side is `api.php` plus `server/*.php` (PHP 8.3 with `pdo_sqlite` and 
 ];
 ```
 
-Admin tasks: `sudo -u www-data php server/cli.php users` and `… assign-unowned EMAIL` (gives projects shared before accounts existed to that account).
+**Admin panel:** admins get an *Admin* item in the account menu with three tabs:
+
+- **Overview:** account and project numbers, storage and disk space.
+- **Accounts:** search, confirm, send a password reset, disable/enable, grant/remove admin, and delete with or without the account's projects.
+- **Projects:** every project, including those uploaded through the old monsym.se copy. Open, copy the link, change the owner, or delete.
+
+Admins can open and edit any project. They can't disable, demote or delete their own account from the panel.
+
+Command-line admin tasks, run on the server:
+
+```
+sudo -u www-data php server/cli.php users
+sudo -u www-data php server/cli.php make-admin EMAIL      # or remove-admin EMAIL
+sudo -u www-data php server/cli.php assign-unowned EMAIL  # give projects without an owner to EMAIL
+```
 
 `.user.ini` raises PHP's upload limit to 60 MB for this directory (PHP-FPM).
 
