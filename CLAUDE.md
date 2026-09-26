@@ -38,7 +38,7 @@ Static web app (HTML, jQuery 3.7, Bootstrap 5.3, Bootstrap Icons, Inter web font
 
 - Apache with PHP-FPM (global `php8.3-fpm.conf`), `AllowOverride None`, Let's Encrypt via `certbot --apache`, which creates `*-le-ssl.conf` and renews through `certbot.timer`.
 - **nadirlab.online** (primary, live since 2026-09-26): docroot `/var/www/nadirlab`, sites `nadirlab.conf` (HTTP, 301 to https://nadirlab.online) and `nadirlab-le-ssl.conf` (HTTPS; www redirects to the bare domain). Let's Encrypt cert name `nadirlab.online` covers both names. Logs are `nadirlab-*.log`. DNS is at Namecheap BasicDNS: `@` A 65.108.78.77, `www` CNAME nadirlab.online.
-- **monsym.se/nadir** (original location): docroot `/var/www/monsym/nadir`. It still runs the old single-file api.php (password-based sharing, no accounts) and shares `/var/lib/nadir/projects` with nadirlab.online.
+- **monsym.se/nadir** (original location): docroot `/var/www/monsym/nadir`. It still runs the old single-file api.php (password-based sharing, no accounts) and shares `/var/lib/nadir/projects` with nadirlab.online. Keep it running unchanged for now: clients have links to it (decided 2026-09-26). Don't redirect it or remove `password_hash` from config.php without asking.
 - Deploy: `rsync -rt index.html api.php .user.ini css js server hetzner3:/var/www/nadirlab/`, then `chown -R root:root` and chmod 644/755 on the server. The Mac's rsync is openrsync, which has no `--chmod`.
 
 ## Testing
