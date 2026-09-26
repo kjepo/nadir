@@ -19,6 +19,7 @@ $(function () {
     areas: [],           // {id, name, color, shape, scale, opacity, showSize, points: [[x, y], ...], ox, oy}
     measures: [],        // {id, name, color, shape, scale, points: [[x, y], ...], ox, oy}
     method: 'similarity',
+    useDrone: true,          // use drone metadata for an approximate calibration when possible
   };
   const image = { loaded: false, name: '', size: 0, W: 0, H: 0, url: null };
   const view = { s: 1, tx: 0, ty: 0 };
@@ -95,9 +96,108 @@ $(function () {
 
   /* ---------- Georeference ---------- */
 
+  // With fewer than two control points, usable drone metadata gives an approximate calibration:
+  // rotation and scale from the drone, position from the GPS (image centre) or the one control point.
   function computeFit() {
-    geo = G.fit(state.controlPoints, state.method, [image.W / 2, image.H / 2]);
+    const center = [image.W / 2, image.H / 2], cps = state.controlPoints;
+    if (drone && drone.usable && state.useDrone && cps.length < 2) {
+      const anchor = cps[0] || { x: center[0], y: center[1], lat: drone.lat, lon: drone.lon };
+      geo = G.fit(droneSeedPoints(anchor), 'similarity', center);
+      geo.source = cps.length ? 'drone+point' : 'drone';
+    } else {
+      geo = G.fit(cps, state.method, center);
+      geo.source = 'points';
+    }
   }
+
+  /* ---------- Drone metadata ---------- */
+
+  // What the drone recorded for the open image: {lat, lon, height, yaw, pitch, f35, model,
+  // usable, reason, gsd}, or null when the image has no GPS position.
+  let drone = null;
+  const CAMERA_ASPECTS = [4 / 3, 3 / 2, 16 / 9, 1];
+  const FULL_FRAME_DIAGONAL = Math.hypot(36, 24);   // mm; defines the 35 mm-equivalent focal length
+
+  async function readDroneMeta(file) {
+    if (!window.exifr) return null;
+    let m;
+    try {
+      m = await exifr.parse(file, { tiff: true, exif: true, gps: true, xmp: true, iptc: false, icc: false, jfif: false });
+    } catch (e) { return null; }
+    if (!m || typeof m.latitude !== 'number' || typeof m.longitude !== 'number') return null;
+    const num = v => (v == null || v === '' || isNaN(parseFloat(v))) ? null : parseFloat(v);
+    return {
+      lat: m.latitude, lon: m.longitude,
+      height: num(m.RelativeAltitude),          // metres above the take-off point (DJI XMP)
+      yaw: num(m.GimbalYawDegree),              // compass direction the camera faces
+      pitch: num(m.GimbalPitchDegree),          // -90 = straight down
+      f35: num(m.FocalLengthIn35mmFormat),
+      model: [m.Make, m.Model].filter(Boolean).join(' '),
+    };
+  }
+
+  // Can the metadata describe this image's geometry? Cropping or stitching breaks the link;
+  // resizing doesn't, because the scale is computed from the image's own diagonal.
+  function assessDrone(d) {
+    const aspect = Math.max(image.W, image.H) / Math.min(image.W, image.H);
+    let reason = '';
+    if (d.height == null || d.yaw == null || d.pitch == null) {
+      reason = 'the photo has no camera heading, angle or flight height (editing software sometimes removes them)';
+    } else if (Math.abs(d.pitch + 90) > 5) {
+      reason = `the camera was tilted (${d.pitch.toFixed(0)}°) rather than pointing straight down`;
+    } else if (!d.f35) {
+      reason = 'the photo has no focal length';
+    } else if (d.height < 5) {
+      reason = 'the recorded flight height is too low to use';
+    } else if (!CAMERA_ASPECTS.some(a => Math.abs(aspect / a - 1) < 0.015)) {
+      reason = `the image looks cropped or stitched (${image.W} × ${image.H})`;
+    }
+    d.usable = !reason;
+    d.reason = reason;
+    d.gsd = d.usable ? d.height * FULL_FRAME_DIAGONAL / (d.f35 * Math.hypot(image.W, image.H)) : null;
+    return d;
+  }
+
+  // Two points that pin down the drone-based transform: the anchor, and a point straight
+  // "up" in the image, which lies in the camera's compass direction at the drone's scale.
+  function droneSeedPoints(anchor) {
+    const r = Math.max(image.W, image.H) / 2;
+    const yaw = drone.yaw * Math.PI / 180;
+    const up = G.offsetLatLon(anchor, Math.sin(yaw) * r * drone.gsd, Math.cos(yaw) * r * drone.gsd);
+    return [{ x: anchor.x, y: anchor.y, lat: anchor.lat, lon: anchor.lon }, { x: anchor.x, y: anchor.y - r, ...up }];
+  }
+
+  function renderDroneInfo() {
+    const $d = $('#drone-info');
+    if (!drone || !image.loaded) { $d.addClass('d-none').empty(); return; }
+    const facts = [];
+    if (drone.height != null) facts.push(`${Math.round(drone.height)} m above take-off`);
+    if (drone.yaw != null) facts.push(`camera heading ${((drone.yaw % 360 + 360) % 360).toFixed(0)}° ${G.compass((drone.yaw % 360 + 360) % 360)}`);
+    if (drone.pitch != null) facts.push(Math.abs(drone.pitch + 90) <= 5 ? 'pointing straight down' : `tilted ${drone.pitch.toFixed(0)}°`);
+    if (drone.f35) facts.push(`${drone.f35} mm`);
+    const pos = G.formatDecimal(drone);
+    let use;
+    if (drone.usable) {
+      use = `<div class="form-check form-switch mt-1 mb-0">
+        <input class="form-check-input" type="checkbox" id="use-drone" ${state.useDrone ? 'checked' : ''}>
+        <label class="form-check-label" for="use-drone">Use for an approximate calibration (${(drone.gsd * 100).toFixed(1)} cm/px)</label></div>`;
+    } else {
+      use = `<div class="text-secondary mt-1"><i class="bi bi-info-circle"></i> Not used for calibration: ${esc(drone.reason)}.
+             The GPS position is where the drone was, roughly above the middle of the original photo. Handy for finding control points on a map.</div>`;
+    }
+    $d.html(`<div class="d-flex align-items-center gap-2"><i class="bi bi-airplane"></i><b>Drone data</b>
+        <span class="text-secondary text-truncate">${esc(drone.model)}</span></div>
+      <div class="d-flex align-items-center gap-1 mt-1"><span class="coord">${pos}</span>
+        <button class="icon-btn" data-copy="${pos}" title="Copy"><i class="bi bi-clipboard"></i></button>
+        <a class="icon-btn" href="${mapsUrl(drone)}" target="_blank" rel="noopener" title="Open in Google Maps"><i class="bi bi-map"></i></a></div>
+      ${facts.length ? `<div class="text-secondary">${esc(facts.join(' · '))}</div>` : ''}
+      ${use}`).removeClass('d-none');
+  }
+
+  $('#drone-info').on('change', '#use-drone', function () {
+    state.useDrone = this.checked;
+    renderAll(); save();
+  });
 
   /* ---------- Persistence ---------- */
 
@@ -112,7 +212,7 @@ $(function () {
     return {
       app: 'nadir-georeferencer', version: 1,
       image: { name: image.name, width: image.W, height: image.H },
-      method: state.method, controlPoints: state.controlPoints,
+      method: state.method, useDrone: state.useDrone, controlPoints: state.controlPoints,
       queries: state.queries, labels: state.labels, areas: state.areas, measures: state.measures,
       labelDefaults, measureDefaults,
     };
@@ -146,6 +246,7 @@ $(function () {
     if (data.measureDefaults) Object.assign(measureDefaults, data.measureDefaults);
     drawing = null;
     state.method = G.METHODS[data.method] ? data.method : 'similarity';
+    state.useDrone = data.useDrone !== false;
     if (data.labelDefaults) Object.assign(labelDefaults, data.labelDefaults);
     const all = [...state.controlPoints, ...state.queries, ...state.labels, ...state.areas, ...state.measures];
     nextId = all.reduce((m, o) => Math.max(m, o.id || 0), 0) + 1;
@@ -176,6 +277,16 @@ $(function () {
       $('#btn-share, #btn-export-top').prop('disabled', false);
 
       restore({});
+      drone = null;
+      const opened = url;
+      readDroneMeta(file).then(d => {
+        if (image.url !== opened || !d) return;   // another image was opened meanwhile, or no GPS
+        drone = assessDrone(d);
+        renderAll();
+        if (drone.usable && state.useDrone && state.controlPoints.length < 2) {
+          toast('Approximate position from the drone data (roughly ±10 m). Add a control point to make it accurate.', 'primary');
+        }
+      });
       let restored = false;
       if (sharedProject) {
         restored = applySharedProject(sharedProject);
@@ -905,7 +1016,16 @@ $(function () {
 
     const $st = $('#calib-status');
     if (!image.loaded) $st.html('<span class="text-secondary">Open an image to start.</span>');
-    else if (geo.ok) {
+    else if (geo.ok && geo.source !== 'points') {
+      const one = geo.source === 'drone+point';
+      const parts = [`<b class="text-warning-emphasis"><i class="bi bi-airplane"></i> Approximate</b>`,
+                     one ? 'drone data + 1 control point' : 'from drone data'];
+      if (geo.gsd) parts.push(`${(geo.gsd * 100).toFixed(1)} cm/px`);
+      if (geo.bearing != null) parts.push(`<span class="text-nowrap">image top faces ${geo.bearing.toFixed(0)}° ${G.compass(geo.bearing)}</span>`);
+      $st.html(parts.join(' · ') + '<br><span class="text-secondary">' + (one
+        ? 'Accurate near your control point; further away the drone\'s compass and height add some error. Add one more point for a full calibration.'
+        : 'Roughly ±10 m. Add control points to make it accurate: one fixes the position, two take over completely.') + '</span>');
+    } else if (geo.ok) {
       const parts = [`<b class="text-success"><i class="bi bi-check-circle-fill"></i> Calibrated</b>`];
       if (geo.gsd) parts.push(`${(geo.gsd * 100).toFixed(1)} cm/px`);
       if (geo.bearing != null) parts.push(`<span class="text-nowrap">image top faces ${geo.bearing.toFixed(0)}° ${G.compass(geo.bearing)}</span>`);
@@ -919,6 +1039,8 @@ $(function () {
     } else {
       $st.html(`<span class="text-danger"><i class="bi bi-exclamation-triangle"></i> ${esc(geo.error)}</span>`);
     }
+
+    renderDroneInfo();
 
     const $cl = $('#cp-list').empty();
     state.controlPoints.forEach((p, i) => {
@@ -1203,7 +1325,7 @@ $(function () {
     const ll = updateCpParsed();
     if (!ll) { $('#cp-coords').trigger('focus'); return; }
     const note = $('#cp-name').val().trim();
-    const wasOk = geo.ok;
+    const wasOk = geo.ok, wasDrone = geo.ok && geo.source !== 'points';
     let predictedErr = null;
     if (editingCp.id != null) {
       Object.assign(byId(state.controlPoints, editingCp.id), { lat: ll.lat, lon: ll.lon, note });
@@ -1217,7 +1339,10 @@ $(function () {
     modalCp.hide();
     renderAll(); save();
     if (!wasOk && geo.ok) toast('Calibrated! Switch to Query mode (Q) and click anywhere to read coordinates.', 'success');
-    else if (predictedErr != null && geo.gsd && predictedErr > Math.max(5, 50 * geo.gsd)) {
+    else if (wasDrone && predictedErr != null) {
+      toast(`The drone data had placed this point ${fmtDist(predictedErr)} away. ` +
+            (geo.source === 'points' ? 'The calibration now uses your control points only.' : 'The position now comes from your control point.'), 'primary');
+    } else if (predictedErr != null && geo.gsd && predictedErr > Math.max(5, 50 * geo.gsd)) {
       toast(`Heads-up: this point is ${fmtDist(predictedErr)} from where the previous calibration placed it. Check the coordinates.`, 'warning');
     }
   });

@@ -126,6 +126,7 @@
       </h6>
       <select class="form-select form-select-sm mb-2" id="method" title="Transform model"></select>
       <div id="calib-status" class="small mb-2"></div>
+      <div id="drone-info" class="small border rounded p-2 mb-2 d-none"></div>
       <ul class="list-group list-group-flush small" id="cp-list"></ul>
     </section>
 
@@ -283,6 +284,8 @@
           <li class="mb-2"><b><i class="bi bi-map text-success"></i> Map:</b> after calibration, shows OpenStreetMap roads, paths, buildings and water over the photo. It's also a quick way to check the calibration. Use the arrow next to the button to choose layers, adjust opacity, or include the map in the exported JPEG. The first load for a new place can take up to a minute; after that it is cached.</li>
           <li class="mb-2"><b><i class="bi bi-pentagon text-danger"></i> Areas:</b> click to place corners. To finish, click the first corner, double-click, or press <kbd>Enter</kbd>. <kbd>Backspace</kbd> removes the last corner and <kbd>Esc</kbd> cancels. Then name the area and pick a colour. Once the image is calibrated, click the area or its label to see its size in m² and ha, and its perimeter. In Area mode you can drag corners to reshape an area, drag the small midpoint handles to add a corner, and Alt-click a corner to delete it.</li>
         </ol>
+        <h6>Drone data</h6>
+        <p class="small">Photos straight from a DJI drone record where the drone was, how high it flew and which way the camera pointed. If a photo has all of this and looks unedited, Nadir uses it for an <b>approximate calibration</b> (roughly ±10 m) as soon as the photo opens. Your first control point then fixes the position exactly, and with two or more, control points take over completely. Editing software may drop these details, and cropping or stitching makes them unusable. In that case the drone's GPS position is still shown, with a map link, to help you find control points.</p>
         <h6>Transform models</h6>
         <ul class="small">
           <li><b>Similarity</b> (≥2 points): scale, rotation and shift. This is the right model for a true nadir shot over roughly flat ground.</li>
@@ -471,6 +474,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
 <script src="js/georef.js"></script>
 <script src="js/app.js"></script>
 </body>

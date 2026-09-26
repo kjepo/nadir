@@ -330,12 +330,18 @@
     return { length: segments.reduce((t, g) => t + g.length, 0), segments };
   }
 
+  // The point `east` and `north` metres from ll (fine for distances of a few kilometres).
+  function offsetLatLon(ll, east, north) {
+    return { lat: ll.lat + north / M_PER_DEG,
+             lon: ll.lon + east / (M_PER_DEG * Math.cos(ll.lat * Math.PI / 180)) };
+  }
+
   function compass(deg) {
     const names = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
     return names[Math.round(deg / 22.5) % 16];
   }
 
-  const api = { METHODS, parseLatLon, formatDecimal, formatDMS, fit, compass, polygonMetrics, pathMetrics };
+  const api = { METHODS, parseLatLon, formatDecimal, formatDMS, fit, compass, polygonMetrics, pathMetrics, offsetLatLon };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Georef = api;
 })(this);
